@@ -266,7 +266,7 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
   if (spreadLat > 3 || spreadLng > 3) warnings.push('Orders span over 300 km. This models a single city, so check for swapped lat/lng or mixed markets.')
 
   if (!parsedCouriers.length) {
-    // uniform auto-fleet when none is supplied, upload couriers for real shift patterns.
+    // Uniform auto-fleet when none is supplied, upload couriers for real shift patterns.
     const count = Math.max(4, Math.round(parsedOrders.length / 6.5))
     const r = rngFrom(parsedOrders.length)
     for (let i = 0; i < count; i++) {

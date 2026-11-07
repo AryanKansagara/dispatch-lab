@@ -87,7 +87,7 @@ const globalAssignment: Strategy = ctx => {
 }
 
 const NEAREST_EACH = 8
-/** caps the matching at the oldest orders in a meltdown, keeps a tick under a few ms. */
+/** Caps the matching at the oldest orders in a meltdown, keeps a tick under a few ms. */
 const MAX_ORDERS_PER_TICK = 70
 const MAX_HOLD_PAST_READY_MIN = 5
 /** The most extra minutes a stack may add to any one order, at zero and at full batching weight. */
@@ -127,7 +127,7 @@ const optimizer = (spec: StrategySpec): Strategy => ctx => {
   const orders = [...ctx.pending].sort((a, b) => a.createdAt - b.createdAt).slice(0, MAX_ORDERS_PER_TICK)
   const couriers = ctx.couriers.filter(c => c.online && c.load < ctx.cfg.maxStack)
   if (!orders.length || !couriers.length) return []
-  // prices only the nearest busy and nearest idle couriers per order, widen if routes look myopic.
+  // Prices only the nearest busy and nearest idle couriers per order, widen if routes look myopic.
   const cost = orders.map(o => {
     const ranked = couriers
       .map((c, i) => ({ i, m: ctx.minutes(c.pos, o.src.store), free: idle(c, ctx.now) }))
