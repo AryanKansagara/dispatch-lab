@@ -2,7 +2,7 @@
 
 Replay a city's delivery marketplace under different dispatch strategies and see the three-way trade-off between batching efficiency, food quality and courier pay.
 
-Live: https://dispatch-lab.vercel.app
+Live: https://dispatch-lab-tan.vercel.app
 
 Independent project, not affiliated with DoorDash. Every sample city is seeded synthetic data. None of it is DoorDash data, and results describe this model, not any real marketplace.
 
