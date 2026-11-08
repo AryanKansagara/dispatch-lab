@@ -9,7 +9,7 @@ import type { Dataset } from './engine/types.ts'
 
 const dayOf = (source: Source, seed: number) => (day: number): Dataset =>
   source.kind === 'scenario'
-    ? generateCity(source.id, source.seed, day)
+    ? generateCity(source.id, source.seed, day, source.city)
     : day === 0 ? source.dataset : resampleDay(source.dataset, seed * 97 + day)
 
 self.onmessage = (e: MessageEvent<{ id: number; req: Request }>) => {

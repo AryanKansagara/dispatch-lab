@@ -1,3 +1,4 @@
+import { addressPoints, type CityGeo } from './city.ts'
 import { rngFrom } from './sim.ts'
 import type { Courier, Dataset, LatLng, Order } from './types.ts'
 
@@ -38,7 +39,8 @@ function gauss(r: () => number) {
  * Seeded synthetic city. The seed fixes the geography; `day` varies only demand and fleet, so a
  * multi-day experiment replays one city rather than a new one each day.
  */
-export function generateCity(id: ScenarioId, seed: number, day = 0): Dataset {
+export function generateCity(id: ScenarioId, seed: number, day = 0, city?: CityGeo): Dataset {
+  if (city) return generateRealCity(id, seed, day, city)
   const sc = SCENARIOS[id]
   const geo = rngFrom(seed * 7919 + 13)
   const hubs = Array.from({ length: 5 }, () => ({ x: (geo() - 0.5) * 8, y: (geo() - 0.5) * 8 }))
@@ -92,6 +94,79 @@ export function generateCity(id: ScenarioId, seed: number, day = 0): Dataset {
     }
   })
   return { name: sc.label, synthetic: true, orders, couriers, startHour: sc.startHour, speedMultiplier: sc.speed }
+}
+
+const kmBetween = (a: LatLng, b: LatLng) =>
+  Math.hypot((b.lng - a.lng) * 111.32 * Math.cos((a.lat * Math.PI) / 180), (b.lat - a.lat) * 110.574)
+
+/** Address points per city, computed once per worker: sampling the street network is the slow part. */
+const addressCache = new WeakMap<CityGeo, LatLng[]>()
+
+/**
+ * The same demand model on a real neighbourhood: kitchens are real OpenStreetMap restaurants and
+ * customers sit on real residential streets. Volumes, prep times, tips and shifts stay synthetic.
+ */
+function generateRealCity(id: ScenarioId, seed: number, day: number, city: CityGeo): Dataset {
+  const sc = SCENARIOS[id]
+  let addresses = addressCache.get(city)
+  if (!addresses) { addresses = addressPoints(city); addressCache.set(city, addresses) }
+  if (addresses.length < 50) throw new Error(`Too few mapped streets around ${city.name} to place customers.`)
+  const geo = rngFrom(seed * 7919 + 13)
+  // Which kitchens are busy is the seeded part of the geography: a shuffled subset with a long tail.
+  const pool = city.stores.map(s => s)
+  for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(geo() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]] }
+  const stores = pool.slice(0, 90).map(([lat, lng, kind], i) => ({ at: { lat, lng }, weight: (kind === 1 ? 1.4 : kind === 2 ? 0.5 : 1) / (1 + i * 0.12) ** 1.1 }))
+  const totalWeight = stores.reduce((s, x) => s + x.weight, 0)
+  // Customers near each kitchen, found once per store rather than per order.
+  const nearCache = new Map<number, LatLng[]>()
+  const nearOf = (si: number) => {
+    let list = nearCache.get(si)
+    if (!list) {
+      list = addresses.filter(a => kmBetween(stores[si].at, a) < 1.6)
+      if (list.length < 5) list = addresses
+      nearCache.set(si, list)
+    }
+    return list
+  }
+
+  const r = rngFrom(seed * 104729 + day * 1299709 + 7)
+  const rate = (t: number) => 0.35 + Math.exp(-((t / sc.minutes - sc.peak) ** 2) / (2 * sc.width ** 2))
+  const orders: Order[] = []
+  const volume = Math.round(sc.orders * (0.94 + r() * 0.12))
+  for (let n = 0; orders.length < volume && n < volume * 40; n++) {
+    const t = r() * sc.minutes
+    if (r() * 1.35 > rate(t)) continue
+    let pick = r() * totalWeight
+    let si = 0
+    for (let i = 0; i < stores.length; i++) { pick -= stores[i].weight; if (pick <= 0) { si = i; break } }
+    const list = r() < 0.72 ? nearOf(si) : addresses
+    const customer = list[Math.floor(r() * list.length)]
+    const prepEst = Math.max(4, Math.exp(Math.log(13) + gauss(r) * 0.4) * sc.prepScale)
+    const tipRoll = r()
+    orders.push({
+      id: '',
+      createdAt: t,
+      store: stores[si].at,
+      customer,
+      prepEstMin: prepEst,
+      prepMin: Math.max(3, prepEst * Math.exp(gauss(r) * 0.18 + 0.03)),
+      tip: tipRoll < 0.18 ? 0 : tipRoll < 0.3 ? 1 + r() * 2 : 3 + -Math.log(1 - r()) * 3.2,
+    })
+  }
+  orders.sort((a, b) => a.createdAt - b.createdAt)
+  orders.forEach((o, i) => { o.id = `O${i + 1}` })
+
+  const couriers: Courier[] = Array.from({ length: sc.couriers }, (_, i) => {
+    const near = nearOf(Math.floor(r() * Math.min(stores.length, 25)))
+    const start = r() * sc.minutes * 0.25 - sc.minutes * 0.05
+    return {
+      id: `C${i + 1}`,
+      shiftStart: Math.max(0, start),
+      shiftEnd: Math.min(sc.minutes + 30, Math.max(0, start) + sc.minutes * (0.6 + r() * 0.5)),
+      start: near[Math.floor(r() * near.length)],
+    }
+  })
+  return { name: `${sc.label}, ${city.name}`, synthetic: true, orders, couriers, startHour: sc.startHour, speedMultiplier: sc.speed }
 }
 
 /** Another plausible day of an uploaded dataset: resample orders and nudge times, keep the fleet. */

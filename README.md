@@ -4,7 +4,7 @@ Replay a city's delivery marketplace under different dispatch strategies and see
 
 Live: https://dispatch-lab-tan.vercel.app
 
-Independent project, not affiliated with DoorDash. Every sample city is seeded synthetic data. None of it is DoorDash data, and results describe this model, not any real marketplace.
+Independent project, not affiliated with DoorDash. Streets and restaurant locations are real, from OpenStreetMap. Orders, couriers, prep times and pay are seeded synthetic data. None of it is DoorDash data, and results describe this model, not any real marketplace.
 
 ## The pain
 
@@ -14,7 +14,9 @@ Sources: [dispatch (2021)](https://careersatdoordash.com/blog/using-ml-and-optim
 
 ## Features
 
-- Input: paste or upload CSV or JSON of orders and couriers, or generate seeded cities (lunch rush, dinner peak, rain, courier shortage).
+- Real cities: Toronto, New York, San Francisco, Chicago, Los Angeles, Vancouver, Montreal, Waterloo and London ship ready to load, and search reaches any place OpenStreetMap knows (fetched live from Overpass, cached in the browser). Kitchens are real mapped restaurants, customers sit on real residential streets within 3 km of the centre, and only the main connected street network is kept, so no order lands across a river with no mapped bridge.
+- Couriers on the map follow the street network (A* over the OpenStreetMap graph, routed lazily as legs are drawn). Across the bundled cities real routes average 1.3 to 1.44 times straight-line distance, which is where the simulator's default 1.35 road factor sits.
+- Scenarios on top of any city: lunch rush, dinner peak, rain, courier shortage, or a fictional grid city. Or paste or upload CSV or JSON of your own orders and couriers.
 - Discrete-event simulator: arrival, prep with forecast error, assignment, pickup, multi-stop routes, delivery. Distance is haversine times a road factor at a configurable speed.
 - Strategies: greedy nearest courier, batch at same store, hand-rolled Hungarian matching each tick, and a score-weighted optimizer with batching, food and pay sliders.
 - Metrics: delivery p50 and p90, food wait, temperature at the door from a cooling curve, late rate, utilization, pay per active hour, online hour and mile, stack share, worst-paid order inside a stack, platform cost per delivery.
@@ -25,7 +27,7 @@ Sources: [dispatch (2021)](https://careersatdoordash.com/blog/using-ml-and-optim
 
 ## Model assumptions
 
-Pay is a stated model: base plus marginal route miles, floored, plus tip. Prep forecasts have noise, but there are no declines, traffic or parking models. Uploaded payouts are used as given. Treat outputs as a way to reason about trade-offs, not as forecasts.
+Drive times use straight-line distance times the road factor, not the routed path, so the simulator stays fast enough to rerun as you drag a slider; the routed streets are what you see on the map. Pay is a stated model: base plus marginal route miles, floored, plus tip. Prep forecasts have noise, but there are no declines, traffic or parking models. Uploaded payouts are used as given. Treat outputs as a way to reason about trade-offs, not as forecasts.
 
 ## Run locally
 
@@ -35,3 +37,7 @@ npm run dev
 npm test
 npm run build
 ```
+
+Refresh the bundled cities from OpenStreetMap with `node scripts/bake-cities.ts` (live from Overpass), or from local extracts converted to Overpass-style JSON with `node scripts/bake-cities.ts --from <dir>`.
+
+Map data &copy; OpenStreetMap contributors, available under the Open Database License.

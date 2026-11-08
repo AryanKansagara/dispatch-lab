@@ -1,4 +1,6 @@
+import type { CityGeo } from './engine/city.ts'
 import { tempAt } from './engine/metrics.ts'
+import { buildRoadGraph, route, type RoadGraph } from './engine/roads.ts'
 import type { CourierState, LatLng, OrderState, SimResult } from './engine/types.ts'
 
 export interface MapPalette {
@@ -53,10 +55,18 @@ const hash = (a: number, b: number) => {
 }
 
 interface P { x: number; y: number }
-const THETA = -0.46
-const COS = Math.cos(THETA)
-const SIN = Math.sin(THETA)
-const SQUISH = 0.66
+/** A street path in world coordinates with cumulative length, for interpolating along it. */
+interface Poly { pts: P[]; cum: number[] }
+
+const graphs = new WeakMap<CityGeo, RoadGraph>()
+function graphFor(city: CityGeo) {
+  let g = graphs.get(city)
+  if (!g) { g = buildRoadGraph(city); graphs.set(city, g) }
+  return g
+}
+/** The fictional grid is drawn as a rotated isometric block city; real maps stay north-up. */
+const GRID_VIEW = { cos: Math.cos(-0.46), sin: Math.sin(-0.46), squish: 0.66 }
+const REAL_VIEW = { cos: 1, sin: 0, squish: 0.82 }
 
 export interface DrawOptions { selected: number; dim: boolean; dark: boolean }
 export interface LiveStats { waiting: number; carried: number; delivered: number; onRoad: number; idle: number; stacksLive: number }
@@ -82,8 +92,21 @@ export class Scene {
   private staticKey = ''
   private dpr = 1
 
-  constructor(r: SimResult) {
+  private city: CityGeo | null
+  private graph: RoadGraph | null = null
+  private paths = new Map<string, Poly>()
+  private COS: number
+  private SIN: number
+  private SQUISH: number
+
+  constructor(r: SimResult, city?: CityGeo | null) {
     this.r = r
+    this.city = city ?? null
+    const view = this.city ? REAL_VIEW : GRID_VIEW
+    this.COS = view.cos
+    this.SIN = view.sin
+    this.SQUISH = view.squish
+    if (this.city) this.graph = graphFor(this.city)
     const lats = r.orders.flatMap(o => [o.src.store.lat, o.src.customer.lat])
     const lngs = r.orders.flatMap(o => [o.src.store.lng, o.src.customer.lng])
     const span = (v: number[]) => {
@@ -109,12 +132,13 @@ export class Scene {
   private world(p: LatLng): P {
     return { x: (p.lng - this.lng0) * this.kmLng, y: (p.lat - this.lat0) * 110.574 }
   }
-  /** Stops sit on street intersections so couriers visibly drive the grid. */
+  /** Stops sit on street intersections so couriers visibly drive the grid. Real maps keep true positions. */
   private snap(p: P): P {
+    if (this.city) return p
     return { x: Math.round(p.x / this.cell) * this.cell, y: Math.round(p.y / this.cell) * this.cell }
   }
-  private sx(x: number, y: number) { return this.ox + this.scale * (x * COS - y * SIN) }
-  private sy(x: number, y: number) { return this.oy - this.scale * SQUISH * (x * SIN + y * COS) }
+  private sx(x: number, y: number) { return this.ox + this.scale * (x * this.COS - y * this.SIN) }
+  private sy(x: number, y: number) { return this.oy - this.scale * this.SQUISH * (x * this.SIN + y * this.COS) }
 
   /** focusX places the city centre, cover overfills the canvas (the landing hero). */
   layout(w: number, h: number, dpr: number, cover: boolean, focusX = 0.5) {
@@ -122,8 +146,8 @@ export class Scene {
     this.cssH = h
     this.dpr = dpr
     // Fit to where the action is, trimmed, rather than the rotated bounding box of the map.
-    const us = [...this.store, ...this.cust].map(p => p.x * COS - p.y * SIN).sort((a, b) => a - b)
-    const vs = [...this.store, ...this.cust].map(p => SQUISH * (p.x * SIN + p.y * COS)).sort((a, b) => a - b)
+    const us = [...this.store, ...this.cust].map(p => p.x * this.COS - p.y * this.SIN).sort((a, b) => a - b)
+    const vs = [...this.store, ...this.cust].map(p => this.SQUISH * (p.x * this.SIN + p.y * this.COS)).sort((a, b) => a - b)
     const at = (v: number[], q: number) => v[Math.min(v.length - 1, Math.floor(v.length * q))] ?? 0
     const pw = Math.max(1, at(us, 0.985) - at(us, 0.015))
     const ph = Math.max(1, at(vs, 0.985) - at(vs, 0.015))
@@ -144,6 +168,12 @@ export class Scene {
     g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
     g.fillStyle = pal.ground
     g.fillRect(0, 0, this.cssW, this.cssH)
+    if (this.city) {
+      this.paintCity(g, pal)
+      this.staticLayer = c
+      this.staticKey = key
+      return c
+    }
 
     const stores: P[] = []
     const seen = new Set<string>()
@@ -238,7 +268,87 @@ export class Scene {
     return c
   }
 
+  /** Real streets, parks and water from OpenStreetMap, with every mapped restaurant as a faint dot. */
+  private paintCity(g: CanvasRenderingContext2D, pal: MapPalette) {
+    const city = this.city!
+    const trace = (flat: number[], close: boolean) => {
+      g.beginPath()
+      for (let i = 0; i < flat.length; i += 2) {
+        const w = this.world({ lat: flat[i], lng: flat[i + 1] })
+        const x = this.sx(w.x, w.y)
+        const y = this.sy(w.x, w.y)
+        if (i) g.lineTo(x, y)
+        else g.moveTo(x, y)
+      }
+      if (close) g.closePath()
+    }
+    g.lineCap = 'round'
+    g.lineJoin = 'round'
+    g.fillStyle = pal.park
+    for (const poly of city.parks) { trace(poly, true); g.fill() }
+    g.fillStyle = pal.water
+    for (const poly of city.water) { trace(poly, true); g.fill() }
+    const zoom = Math.max(0.6, Math.min(2.2, this.scale / 60))
+    const widths = [1.1, 2.2, 3.6]
+    // A darker casing under each street, then the fill, so roads read on either theme.
+    for (const pass of ['casing', 'fill'] as const) {
+      for (const cls of [0, 1, 2] as const) {
+        g.strokeStyle = pass === 'casing' ? pal.sideB : pal.roof
+        g.lineWidth = widths[cls] * zoom + (pass === 'casing' ? 1.4 : 0)
+        for (const st of city.streets) if (st.c === cls) { trace(st.p, false); g.stroke() }
+      }
+    }
+    // Every mapped restaurant as a faint dot; the busy kitchens light up on top during the run.
+    g.fillStyle = pal.muted
+    g.globalAlpha = 0.28
+    for (const [lat, lng] of city.stores) {
+      const w = this.world({ lat, lng })
+      g.beginPath()
+      g.arc(this.sx(w.x, w.y), this.sy(w.x, w.y), 1.1 * zoom, 0, 6.3)
+      g.fill()
+    }
+    g.globalAlpha = 1
+  }
+
+  /** The street route between two places, cached: each leg is routed once, the first time it is drawn. */
+  private polyFor(a: LatLng, b: LatLng): Poly {
+    const key = `${a.lat},${a.lng}>${b.lat},${b.lng}`
+    let poly = this.paths.get(key)
+    if (!poly) {
+      const pts = (this.graph ? route(this.graph, a, b) : [a, b]).map(p => this.world(p))
+      const cum = [0]
+      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y))
+      poly = { pts, cum }
+      this.paths.set(key, poly)
+    }
+    return poly
+  }
+
+  private polyPoint(poly: Poly, f: number): P {
+    const total = poly.cum[poly.cum.length - 1]
+    const d = Math.max(0, Math.min(1, f)) * total
+    let i = 1
+    while (i < poly.cum.length - 1 && poly.cum[i] < d) i++
+    const span = poly.cum[i] - poly.cum[i - 1] || 1
+    const k = (d - poly.cum[i - 1]) / span
+    const a = poly.pts[i - 1]
+    const b = poly.pts[i]
+    return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k }
+  }
+
+  /** Traces a street route from fraction f to its end onto the current canvas path. */
+  private tracePoly(ctx: CanvasRenderingContext2D, poly: Poly, f: number, P2: (p: P) => P) {
+    const d = Math.max(0, Math.min(1, f)) * poly.cum[poly.cum.length - 1]
+    for (let i = 1; i < poly.pts.length; i++) {
+      if (poly.cum[i] <= d) continue
+      const q = P2(poly.pts[i])
+      ctx.lineTo(q.x, q.y)
+    }
+  }
+
   private pathPoint(a: P, b: P, f: number): P {
+    // Real maps have no routing graph here, so couriers move point to point (drive time still uses the road factor).
+    if (this.city) return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f }
     const dx = Math.abs(b.x - a.x)
     const dy = Math.abs(b.y - a.y)
     const along = (dx + dy) * f
@@ -247,20 +357,24 @@ export class Scene {
   }
 
   /** Courier position at time t, on the street grid. Keeps a per-courier cursor for fast playback. */
-  private courierAt(c: CourierState, t: number): { p: P; driving: boolean; a?: P; b?: P; f?: number } {
+  private courierAt(c: CourierState, t: number): { p: P; here: LatLng; driving: boolean; a?: P; b?: P; f?: number; poly?: Poly; to?: LatLng } {
     const legs = c.legs
-    if (!legs.length) return { p: this.snap(this.world(c.src.start)), driving: false }
+    if (!legs.length) return { p: this.snap(this.world(c.src.start)), here: c.src.start, driving: false }
     let i = this.lastLeg[c.index]
     if (i >= legs.length || legs[i].t0 > t) i = 0
     while (i < legs.length - 1 && legs[i + 1].t0 <= t) i++
     this.lastLeg[c.index] = i
     const leg = legs[i]
-    if (t < leg.t0) return { p: this.snap(this.world(leg.from)), driving: false }
-    if (t >= leg.t1 || leg.kind !== 'drive') return { p: this.snap(this.world(leg.to)), driving: false }
+    if (t < leg.t0) return { p: this.snap(this.world(leg.from)), here: leg.from, driving: false }
+    if (t >= leg.t1 || leg.kind !== 'drive') return { p: this.snap(this.world(leg.to)), here: leg.to, driving: false }
     const a = this.snap(this.world(leg.from))
     const b = this.snap(this.world(leg.to))
     const f = (t - leg.t0) / Math.max(1e-6, leg.t1 - leg.t0)
-    return { p: this.pathPoint(a, b, f), driving: true, a, b, f }
+    if (this.city) {
+      const poly = this.polyFor(leg.from, leg.to)
+      return { p: this.polyPoint(poly, f), here: leg.from, driving: true, a, b, f, poly, to: leg.to }
+    }
+    return { p: this.pathPoint(a, b, f), here: leg.from, driving: true, a, b, f }
   }
 
   private isOnline(c: CourierState, t: number) {
@@ -274,10 +388,10 @@ export class Scene {
 
   /** Remaining visits in the order they really happened. */
   private remainingStops(c: number, t: number) {
-    const stops: { p: P; at: number; kind: 'pickup' | 'dropoff'; o: OrderState }[] = []
+    const stops: { p: P; ll: LatLng; at: number; kind: 'pickup' | 'dropoff'; o: OrderState }[] = []
     for (const o of this.activeOrders(c, t)) {
-      if (o.pickedAt < 0 || t < o.pickedAt) stops.push({ p: this.store[o.index], at: o.pickedAt < 0 ? Infinity : o.pickedAt, kind: 'pickup', o })
-      stops.push({ p: this.cust[o.index], at: o.deliveredAt < 0 ? Infinity : o.deliveredAt, kind: 'dropoff', o })
+      if (o.pickedAt < 0 || t < o.pickedAt) stops.push({ p: this.store[o.index], ll: o.src.store, at: o.pickedAt < 0 ? Infinity : o.pickedAt, kind: 'pickup', o })
+      stops.push({ p: this.cust[o.index], ll: o.src.customer, at: o.deliveredAt < 0 ? Infinity : o.deliveredAt, kind: 'dropoff', o })
     }
     return stops.sort((a, b) => a.at - b.at)
   }
@@ -307,12 +421,25 @@ export class Scene {
       if (opt.selected >= 0 && !isSel && !stacked) continue
       ctx.beginPath()
       let prev = at.p
-      if (at.driving && at.b) {
+      if (this.city) {
+        // Real maps: every remaining leg follows the street network.
+        const s0 = P2(at.p)
+        ctx.moveTo(s0.x, s0.y)
+        let from = at.here
+        let skip = false
+        if (at.driving && at.poly && at.to) { this.tracePoly(ctx, at.poly, at.f ?? 0, P2); from = at.to; skip = true }
+        for (const st of stops) {
+          if (skip && st.ll.lat === from.lat && st.ll.lng === from.lng) { skip = false; continue }
+          skip = false
+          this.tracePoly(ctx, this.polyFor(from, st.ll), 0, P2)
+          from = st.ll
+        }
+      } else if (at.driving && at.b) {
         // Finish the current street leg before heading on.
         const b = at.b
         const start = P2(at.p)
         ctx.moveTo(start.x, start.y)
-        if (at.p.x !== b.x && at.p.y !== b.y) { const m = P2({ x: b.x, y: at.p.y }); ctx.lineTo(m.x, m.y) }
+        if (!this.city && at.p.x !== b.x && at.p.y !== b.y) { const m = P2({ x: b.x, y: at.p.y }); ctx.lineTo(m.x, m.y) }
         const e = P2(b)
         ctx.lineTo(e.x, e.y)
         prev = b
@@ -320,11 +447,10 @@ export class Scene {
         const s = P2(prev)
         ctx.moveTo(s.x, s.y)
       }
-      for (const s of stops) {
+      if (!this.city) for (const s of stops) {
         if (at.driving && at.b && s.p.x === at.b.x && s.p.y === at.b.y && prev === at.b) continue
-        const m = P2({ x: s.p.x, y: prev.y })
         const e = P2(s.p)
-        ctx.lineTo(m.x, m.y)
+        if (!this.city) { const m = P2({ x: s.p.x, y: prev.y }); ctx.lineTo(m.x, m.y) }
         ctx.lineTo(e.x, e.y)
         prev = s.p
       }
@@ -424,7 +550,8 @@ export class Scene {
         const base = ctx.globalAlpha
         let prev = p
         for (let k = 1; k <= 4; k++) {
-          const q = P2(this.pathPoint(at.a, at.b, Math.max(0, at.f - k * 0.035)))
+          const back = Math.max(0, at.f - k * 0.035)
+          const q = P2(at.poly ? this.polyPoint(at.poly, back) : this.pathPoint(at.a, at.b, back))
           ctx.globalAlpha = base * (0.26 - k * 0.05)
           ctx.beginPath()
           ctx.moveTo(prev.x, prev.y)

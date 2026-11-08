@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import type { CityGeo } from './engine/city.ts'
 import type { ScenarioId } from './engine/data.ts'
 import type { ExperimentResult } from './engine/experiment.ts'
 import type { Metrics } from './engine/metrics.ts'
 import type { SweepPoint } from './engine/sweep.ts'
 import type { Dataset, SimConfig, SimResult, StrategySpec } from './engine/types.ts'
 
-export type Source = { kind: 'scenario'; id: ScenarioId; seed: number } | { kind: 'data'; dataset: Dataset }
+export type Source = { kind: 'scenario'; id: ScenarioId; seed: number; city?: CityGeo } | { kind: 'data'; dataset: Dataset }
 
 export type Request =
   | { kind: 'run'; source: Source; spec: StrategySpec; cfg: SimConfig }

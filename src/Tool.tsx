@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react'
 import { CoolingChart, EstimateChart, FrontierChart, Histogram, LineChart, PowerChart, SwitchbackGrid, TradeoffTriangle } from './Charts.tsx'
 import { startTask, useRun, type ExperimentOutput, type Request, type Source, type SweepOutput } from './client.ts'
+import { loadCity, searchPlaces, useCity, type Place } from './cities.ts'
 import { Clock, clockLabel } from './clock.ts'
+import { cityLabel, parseCityKey, PRESETS, searchedKey, type CityGeo } from './engine/city.ts'
 import { parseDataset, sampleCsv, SCENARIOS, type ScenarioId } from './engine/data.ts'
 import { daysForPower, OUTCOMES, powerAt, type OutcomeId } from './engine/experiment.ts'
 import { quantile, stacksOf, tempAt, type Metrics } from './engine/metrics.ts'
@@ -53,10 +55,12 @@ export default function Tool() {
   }, [toast])
 
   const useCustom = s.scenario === 'custom'
+  const cityState = useCity(s.city)
+  const cityPending = !useCustom && (cityState.loading || !!cityState.error)
   const source: Source | null = useCustom
     ? (dataset ? { kind: 'data', dataset } : null)
-    : { kind: 'scenario', id: s.scenario as ScenarioId, seed: s.seed }
-  const sourceKey = useCustom ? `custom/${dataset?.name}/${dataset?.orders.length}/${dataset?.couriers.length}` : `${s.scenario}/${s.seed}`
+    : cityPending ? null : { kind: 'scenario', id: s.scenario as ScenarioId, seed: s.seed, city: cityState.city ?? undefined }
+  const sourceKey = useCustom ? `custom/${dataset?.name}/${dataset?.orders.length}/${dataset?.couriers.length}` : `${s.city}/${s.scenario}/${s.seed}`
   const cfg = configOf(s)
   const cfgKey = `${s.maxStack}/${s.speedKmh}/${s.roadFactor}`
   const startHour = useCustom ? undefined : SCENARIOS[s.scenario as ScenarioId].startHour
@@ -86,6 +90,7 @@ export default function Tool() {
       </header>
 
       <div className="scenario-bar">
+        {!useCustom && <CityPicker value={s.city} onChange={city => update({ city })} />}
         <div className="pills" role="group" aria-label="City scenario">
           {(Object.keys(SCENARIOS) as ScenarioId[]).map(id => (
             <button key={id} type="button" className={s.scenario === id ? 'pill on' : 'pill'} aria-pressed={s.scenario === id} title={SCENARIOS[id].blurb} onClick={() => update({ scenario: id })}>{SCENARIOS[id].label}</button>
@@ -104,13 +109,15 @@ export default function Tool() {
             </button>
           </label>
         )}
-        {useCustom ? <span className="badge badge-yours"><i aria-hidden="true" />Your data, local to this browser</span> : <SyntheticBadge text="Synthetic city, not DoorDash data" />}
+        {useCustom ? <span className="badge badge-yours"><i aria-hidden="true" />Your data, local to this browser</span> : <SyntheticBadge text={s.city === 'grid' ? 'Synthetic city, not DoorDash data' : 'Real streets, synthetic orders'} />}
       </div>
 
       <main className="tool-main">
-        {s.tab === 'replay' && <ReplayView s={s} update={update} source={source} sourceKey={sourceKey} cfg={cfg} cfgKey={cfgKey} startHour={startHour} />}
-        {s.tab === 'experiment' && (source ? <ExperimentView s={s} update={update} source={source} sourceKey={sourceKey} cfgKey={cfgKey} /> : <NeedData update={update} />)}
-        {s.tab === 'sweep' && (source ? <SweepView s={s} update={update} source={source} sourceKey={sourceKey} cfgKey={cfgKey} /> : <NeedData update={update} />)}
+        {cityPending && s.tab !== 'data' ? <CityStatus cityKey={s.city} error={cityState.error} onGrid={() => update({ city: 'grid' })} onPreset={() => update({ city: 'toronto' })} /> : <>
+          {s.tab === 'replay' && <ReplayView s={s} update={update} source={source} sourceKey={sourceKey} cfg={cfg} cfgKey={cfgKey} startHour={startHour} />}
+          {s.tab === 'experiment' && (source ? <ExperimentView s={s} update={update} source={source} sourceKey={sourceKey} cfgKey={cfgKey} /> : <NeedData update={update} />)}
+          {s.tab === 'sweep' && (source ? <SweepView s={s} update={update} source={source} sourceKey={sourceKey} cfgKey={cfgKey} /> : <NeedData update={update} />)}
+        </>}
         {s.tab === 'data' && <DataView dataset={dataset} onLoad={d => {
           setDataset(d)
           try {
@@ -122,6 +129,88 @@ export default function Tool() {
       </main>
       <Footer />
       <div className={toast ? 'toast show' : 'toast'} role="status" aria-live="polite">{toast}</div>
+    </div>
+  )
+}
+
+const cityOf = (source: Source | null): CityGeo | null => (source?.kind === 'scenario' ? source.city ?? null : null)
+
+/** Ready-made cities load instantly; search reaches any place OpenStreetMap knows. */
+function CityPicker({ value, onChange }: { value: string; onChange(key: string): void }) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState<Place[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const searched = parseCityKey(value)?.kind === 'search'
+  const search = async (e: { preventDefault(): void }) => {
+    e.preventDefault()
+    if (q.trim().length < 2) return
+    setBusy(true)
+    setError('')
+    try {
+      const list = await searchPlaces(q.trim())
+      setResults(list)
+      if (!list.length) setError('No places found. Try a city name.')
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
+    setBusy(false)
+  }
+  // Warm the cache for the city a visitor is most likely to pick next.
+  useEffect(() => { void loadCity('toronto').catch(() => {}) }, [])
+  return (
+    <div className="city-picker">
+      <label className="city-select">
+        <span>City</span>
+        <select value={value} onChange={e => e.target.value === '__search' ? setOpen(true) : onChange(e.target.value)}>
+          {PRESETS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {searched && <option value={value}>{cityLabel(value)}</option>}
+          <option value="grid">Fictional grid city</option>
+          <option value="__search">Search any city...</option>
+        </select>
+      </label>
+      <button type="button" className="btn btn-quiet btn-small" onClick={() => setOpen(o => !o)} aria-expanded={open}>Search</button>
+      {open && (
+        <div className="city-search" role="dialog" aria-label="Search for a city" onKeyDown={e => { if (e.key === 'Escape') setOpen(false) }}>
+          <form onSubmit={search}>
+            <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="City or neighbourhood, e.g. Brooklyn" aria-label="City or neighbourhood" />
+            <button className="btn btn-red btn-small" type="submit" disabled={busy}>{busy ? 'Searching' : 'Find'}</button>
+          </form>
+          {error && <p className="city-error">{error}</p>}
+          {results && results.length > 0 && (
+            <ul>
+              {results.map(p => (
+                <li key={`${p.center.lat},${p.center.lng}`}>
+                  <button type="button" onClick={() => { onChange(searchedKey(p.name, p.center)); setOpen(false); setResults(null); setQ('') }}>
+                    <b>{p.name}</b><span>{p.detail}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="city-note">Restaurants and streets within 3 km of the centre come live from OpenStreetMap. A new place can take up to a minute; ready-made cities load instantly.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CityStatus({ cityKey, error, onGrid, onPreset }: { cityKey: string; error: string; onGrid(): void; onPreset(): void }) {
+  const name = cityLabel(cityKey)
+  if (!error) return (
+    <div className="empty" role="status">
+      <span className="spinner" />
+      <h2>Loading {name}</h2>
+      <p>{parseCityKey(cityKey)?.kind === 'search' ? 'Fetching restaurants and streets from OpenStreetMap. A new place can take up to a minute.' : 'Loading real streets and restaurants.'}</p>
+    </div>
+  )
+  return (
+    <div className="empty" role="alert">
+      <h2>Could not load {name}</h2>
+      <p>{error}</p>
+      <div className="hero-cta">
+        <button type="button" className="btn btn-red" onClick={onPreset}>Use Toronto</button>
+        <button type="button" className="btn btn-quiet" onClick={onGrid}>Use the fictional city</button>
+      </div>
     </div>
   )
 }
@@ -348,13 +437,13 @@ function ReplayView({ s, update, source, sourceKey, cfg, cfgKey, startHour }: {
       <div className="replay-grid">
         <div className="replay-maps">
           <div className={s.compare ? 'maps two' : 'maps'}>
-            <CityMap result={a?.result ?? null} clock={clock} startHour={startHour}
+            <CityMap result={a?.result ?? null} city={cityOf(source)} clock={clock} startHour={startHour}
               selected={selected?.side === 'a' ? selected.index : -1}
               onSelect={i => setSelected(i >= 0 ? { side: 'a', index: i } : null)}
               label={<><span className="tag a">A</span> {labelA}{runA.busy && <span className="spinner tiny" />}</>}
               ariaLabel={`Animated city map for ${labelA}. Click a courier to see their route and pay, or use the courier list.`} />
             {s.compare && (
-              <CityMap result={b?.result ?? null} clock={clock} startHour={startHour}
+              <CityMap result={b?.result ?? null} city={cityOf(source)} clock={clock} startHour={startHour}
                 selected={selected?.side === 'b' ? selected.index : -1}
                 onSelect={i => setSelected(i >= 0 ? { side: 'b', index: i } : null)}
                 label={<><span className="tag b">B</span> {labelB}{runB.busy && <span className="spinner tiny" />}</>}

@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { EstimateChart, FrontierChart, TradeoffTriangle } from './Charts.tsx'
 import { startTask, useRun, type ExperimentOutput, type Request, type Source, type SweepOutput } from './client.ts'
 import { Clock } from './clock.ts'
+import { useCity } from './cities.ts'
 import { configOf, DEFAULT_SETTINGS } from './engine/settings.ts'
 import { CityMap, Footer, HeatLegend, Link, Monogram, prefersReducedMotion, Slider, SyntheticBadge, ThemeToggle } from './shared.tsx'
 
 const HERO_SEED = 7
-const SOURCE: Source = { kind: 'scenario', id: 'dinner', seed: HERO_SEED }
+// The evidence section below runs on the fictional city, which needs no download.
+const GRID_SOURCE: Source = { kind: 'scenario', id: 'dinner', seed: HERO_SEED }
 const CFG = configOf({ ...DEFAULT_SETTINGS, seed: HERO_SEED })
 const money = (v: number) => `$${v.toFixed(2)}`
 
@@ -32,8 +34,11 @@ function Hero() {
   const [batch, setBatch] = useState(0.5)
   const clock = useMemo(() => { const c = new Clock(); c.loop = true; c.speed = 3; return c }, [])
   const spec = { id: 'optimizer' as const, batch, fresh: 0.5, pay: 0 }
-  const req: Request = { kind: 'run', source: SOURCE, spec, cfg: CFG }
-  const run = useRun(req, String(batch))
+  const { city, error: cityError } = useCity('toronto')
+  // The hero runs on real Toronto streets; if that file cannot load, the fictional city stands in.
+  const source: Source | null = city ? { kind: 'scenario', id: 'dinner', seed: HERO_SEED, city } : cityError ? { kind: 'scenario', id: 'dinner', seed: HERO_SEED } : null
+  const req: Request | null = source && { kind: 'run', source, spec, cfg: CFG }
+  const run = useRun(req, `${city ? 'toronto' : 'grid'}/${batch}`)
   const m = run.data?.metrics
   const started = useRef(false)
   useEffect(() => {
@@ -60,10 +65,10 @@ function Hero() {
 
   return (
     <section className="hero" ref={box}>
-      <CityMap result={run.data?.result ?? null} clock={clock} cover focusX={0.64} startHour={17}
-        ariaLabel="A synthetic city with couriers driving a street grid. Orders heat up while prepping, then cool until picked up. Stacked orders appear as linked red routes." />
+      <CityMap result={run.data?.result ?? null} city={city} clock={clock} cover focusX={0.64} startHour={17}
+        ariaLabel="Downtown Toronto's real streets and restaurants, with synthetic orders and couriers. Orders heat up while prepping, then cool until picked up. Stacked orders appear as linked red routes." />
       <div className="hero-copy">
-        <SyntheticBadge text="Live simulation of a synthetic city" />
+        <SyntheticBadge text={city ? 'Live: real Toronto streets, synthetic orders' : 'Live simulation of a synthetic city'} />
         <h1>Every stack is a <em>trade-off.</em></h1>
         <p>Replay a city's delivery marketplace under any dispatch strategy, and see what batching really buys: efficiency, at the price of food quality and sometimes courier pay.</p>
         <div className="hero-cta">
@@ -91,8 +96,8 @@ function LiveEvidence() {
   const [exp, setExp] = useState<ExperimentOutput | null>(null)
   useEffect(() => {
     if (!seen) return
-    const a = startTask<SweepOutput>({ kind: 'sweep', source: SOURCE, spec: { id: 'optimizer', batch: 0.5, fresh: 0.5, pay: 0 }, cfg: CFG, steps: 9, days: 2 })
-    const b = startTask<ExperimentOutput>({ kind: 'experiment', source: SOURCE, a: { id: 'hungarian', batch: 0, fresh: 0.5, pay: 0 }, b: { id: 'optimizer', batch: 0.5, fresh: 0.5, pay: 0 }, cfg: CFG, days: 4, regions: 2, windowMin: 30 })
+    const a = startTask<SweepOutput>({ kind: 'sweep', source: GRID_SOURCE, spec: { id: 'optimizer', batch: 0.5, fresh: 0.5, pay: 0 }, cfg: CFG, steps: 9, days: 2 })
+    const b = startTask<ExperimentOutput>({ kind: 'experiment', source: GRID_SOURCE, a: { id: 'hungarian', batch: 0, fresh: 0.5, pay: 0 }, b: { id: 'optimizer', batch: 0.5, fresh: 0.5, pay: 0 }, cfg: CFG, days: 4, regions: 2, windowMin: 30 })
     a.promise.then(setSweep).catch(() => {})
     b.promise.then(setExp).catch(() => {})
     return () => { a.cancel(); b.cancel() }
@@ -104,7 +109,7 @@ function LiveEvidence() {
     <section className="evidence" ref={ref}>
       <div className="section-inner">
         <h2 className="display">Not a mockup. These are running now.</h2>
-        <p className="lead">Both charts below just ran in your browser on a synthetic city. They are model output, not measurements of any real marketplace.</p>
+        <p className="lead">Both charts below just ran in your browser on the fictional grid city. They are model output, not measurements of any real marketplace.</p>
         <div className="evidence-grid">
           <article className="card">
             <h3>The Pareto frontier of the batching weight</h3>
@@ -195,7 +200,7 @@ export function Landing() {
             <article><h3>Switchback experiments</h3><p>Time-region randomization, cluster-robust confidence intervals, a power readout of how long to run, and the naive A/B beside it to expose the interference bias.</p></article>
             <article><h3>Sweep and apply</h3><p>Sweep the batching weight, plot the Pareto frontier, and click any point to apply it.</p></article>
             <article><h3>A map you can interrogate</h3><p>Couriers on a stylized street grid, orders heating and cooling, stacks as linked routes, a timeline scrubber, and any courier's route and pay on click.</p></article>
-            <article><h3>Your data, or a seeded city</h3><p>Paste or upload CSV or JSON, or generate lunch rush, dinner peak, rain and courier shortage. Every run replays from a shareable URL and seed.</p></article>
+            <article><h3>Any real city, or your data</h3><p>Pick Toronto, New York, London and more, or search any place: real restaurants and streets come from OpenStreetMap and couriers drive the actual street network. Generate lunch rush, dinner, rain or a courier shortage on top, or paste your own CSV or JSON. Every run replays from a shareable URL and seed.</p></article>
           </div>
         </div>
       </section>

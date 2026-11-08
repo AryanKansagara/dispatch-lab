@@ -1,3 +1,4 @@
+import { parseCityKey } from './city.ts'
 import type { ScenarioId } from './data.ts'
 import { SCENARIOS } from './data.ts'
 import { DEFAULT_CONFIG, type SimConfig, type StrategyId, type StrategySpec } from './types.ts'
@@ -6,6 +7,8 @@ export type Tab = 'replay' | 'experiment' | 'sweep' | 'data'
 
 export interface Settings {
   scenario: ScenarioId | 'custom'
+  /** 'grid' for the fictional city, a preset id, or a searched place (see parseCityKey). */
+  city: string
   seed: number
   a: StrategySpec
   b: StrategySpec
@@ -21,6 +24,7 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   scenario: 'dinner',
+  city: 'toronto',
   seed: 7,
   a: { id: 'optimizer', batch: 0.15, fresh: 0.5, pay: 0 },
   b: { id: 'optimizer', batch: 0.85, fresh: 0.5, pay: 0 },
@@ -54,6 +58,7 @@ function decodeSpec(raw: string | null, fallback: StrategySpec): StrategySpec {
 export function encodeSettings(s: Settings): string {
   return new URLSearchParams({
     s: s.scenario,
+    city: s.city,
     seed: String(s.seed),
     a: encodeSpec(s.a),
     b: encodeSpec(s.b),
@@ -81,6 +86,7 @@ export function decodeSettings(hash: string, base: Settings = DEFAULT_SETTINGS):
   const tab = q.get('tab') as Tab
   return {
     scenario: sc && (sc in SCENARIOS || sc === 'custom') && Object.hasOwn({ ...SCENARIOS, custom: 1 }, sc) ? (sc as Settings['scenario']) : base.scenario,
+    city: parseCityKey(q.get('city')) ? q.get('city')! : base.city,
     seed: Math.round(num('seed', 1, 999999, base.seed)),
     a: decodeSpec(q.get('a'), base.a),
     b: decodeSpec(q.get('b'), base.b),

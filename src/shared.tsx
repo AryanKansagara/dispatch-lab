@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type AnchorHTMLAttributes, type ReactNode } from 'react'
+import type { CityGeo } from './engine/city.ts'
 import { go } from './App.tsx'
 import { clockLabel, type Clock } from './clock.ts'
 import { Scene, tempColor, type LiveStats } from './scene.ts'
@@ -54,7 +55,7 @@ export function Footer() {
       <div className="footer-inner">
         <div className="footer-brand"><Monogram /> <strong>Dispatch Lab</strong></div>
         <p>Built by Aryan Kansagara. Independent project, not affiliated with DoorDash.</p>
-        <p className="footer-note">Every sample city is seeded synthetic data generated in your browser. None of it is DoorDash data, and results describe this model, not any real marketplace.</p>
+        <p className="footer-note">Streets and restaurant locations come from OpenStreetMap (&copy; OpenStreetMap contributors, ODbL). Orders, couriers, prep times and pay are seeded synthetic data generated in your browser. None of it is DoorDash data, and results describe this model, not any real marketplace.</p>
       </div>
     </footer>
   )
@@ -85,8 +86,8 @@ const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches
 export { reduced as prefersReducedMotion }
 
 /** A live city on canvas. Draws only when the shared clock moves or something visual changes. */
-export function CityMap({ result, clock, cover, focusX, selected = -1, onSelect, label, ariaLabel, children, startHour }: {
-  result: SimResult | null; clock: Clock; cover?: boolean; focusX?: number; selected?: number; onSelect?(c: number): void
+export function CityMap({ result, city, clock, cover, focusX, selected = -1, onSelect, label, ariaLabel, children, startHour }: {
+  result: SimResult | null; city?: CityGeo | null; clock: Clock; cover?: boolean; focusX?: number; selected?: number; onSelect?(c: number): void
   label?: ReactNode; ariaLabel: string; children?: ReactNode; startHour?: number
 }) {
   const wrap = useRef<HTMLDivElement>(null)
@@ -124,12 +125,12 @@ export function CityMap({ result, clock, cover, focusX, selected = -1, onSelect,
 
   useEffect(() => {
     if (!result) return
-    const s = new Scene(result)
+    const s = new Scene(result, city)
     scene.current = s
     fit.current()
     // Canvas text uses the web font, so repaint when it arrives.
     void document.fonts?.ready.then(() => paint.current())
-  }, [result])
+  }, [result, city])
 
   useEffect(() => { paint.current() }, [dark, selected])
 
@@ -167,6 +168,7 @@ export function CityMap({ result, clock, cover, focusX, selected = -1, onSelect,
       />
       {!result && <div className="map-loading" role="status"><span className="spinner" /> Simulating the city</div>}
       {label && <div className="map-label">{label}</div>}
+      {city && <a className="map-attrib" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">&copy; OpenStreetMap contributors</a>}
       <div className="map-hud">
         <span className="map-clock" ref={clockText}>{clockLabel(clock.t, startHour)}</span>
         <div className="map-stats" ref={hud} aria-hidden="true" />
