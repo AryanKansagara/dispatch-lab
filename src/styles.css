@@ -386,7 +386,20 @@ blockquote cite { font-style: normal; font-size: 13px; line-height: 18px; color:
 .note { background: var(--butter); }
 .alert ul, .note ul { margin: 4px 0 0; padding-left: 18px; }
 .format { display: grid; gap: 10px; margin-top: 14px; }
-.format-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.format-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+.observed { margin-top: 14px; }
+.footer-link { color: inherit; text-decoration: underline; }
+.docs { max-width: 820px; margin: 0 auto; padding: 32px 24px 64px; line-height: 1.6; }
+.docs h1 { font-size: clamp(30px, 6vw, 44px); line-height: 1.1; letter-spacing: -.8px; }
+.docs .lead { color: var(--muted); font-size: 18px; margin-top: 10px; }
+.docs h2 { margin-top: 40px; scroll-margin-top: 80px; }
+.docs h3 { margin-top: 24px; }
+.docs p, .docs ul { margin-top: 10px; }
+.docs ul { padding-left: 20px; }
+.docs li + li { margin-top: 6px; }
+.docs a { color: var(--red); }
+.docs code { overflow-wrap: anywhere; }
+.docs .table-wrap { margin-top: 14px; }
 .empty { display: grid; justify-items: center; gap: 12px; padding: 64px 16px; text-align: center; color: var(--muted); }
 .empty h2 { color: var(--ink); }
 .small-empty { padding: 72px 16px; }

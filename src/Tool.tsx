@@ -4,7 +4,7 @@ import { startTask, useRun, type ExperimentOutput, type Request, type Source, ty
 import { loadCity, searchPlaces, useCity, type Place } from './cities.ts'
 import { Clock, clockLabel } from './clock.ts'
 import { cityLabel, parseCityKey, PRESETS, searchedKey, type CityGeo } from './engine/city.ts'
-import { parseDataset, sampleCsv, SCENARIOS, type ScenarioId } from './engine/data.ts'
+import { isMeituan, parseDataset, sampleCsv, SCENARIOS, sliceMeituan, type ScenarioId } from './engine/data.ts'
 import { daysForPower, OUTCOMES, powerAt, type OutcomeId } from './engine/experiment.ts'
 import { quantile, stacksOf, tempAt, type Metrics } from './engine/metrics.ts'
 import { configOf, decodeSettings, DEFAULT_SETTINGS, encodeSettings, type Settings, type Tab } from './engine/settings.ts'
@@ -63,7 +63,7 @@ export default function Tool() {
   const sourceKey = useCustom ? `custom/${dataset?.name}/${dataset?.orders.length}/${dataset?.couriers.length}` : `${s.city}/${s.scenario}/${s.seed}`
   const cfg = configOf(s)
   const cfgKey = `${s.maxStack}/${s.speedKmh}/${s.roadFactor}`
-  const startHour = useCustom ? undefined : SCENARIOS[s.scenario as ScenarioId].startHour
+  const startHour = useCustom ? dataset?.startHour : SCENARIOS[s.scenario as ScenarioId].startHour
 
   const share = async () => {
     try {
@@ -477,6 +477,11 @@ function ReplayView({ s, update, source, sourceKey, cfg, cfgKey, startHour }: {
         <>
           <section className="section-head"><h2>Every number, side by side</h2><p>Undelivered orders stay in the figures as late and cold, so no strategy gets credit for abandoning its hardest orders.</p></section>
           <MetricsTable a={a.metrics} b={b?.metrics} labelA={labelA} labelB={labelB} />
+          {source?.kind === 'data' && source.dataset.observed && (
+            <p className="note observed" role="note">
+              Recorded in the imported file: delivery p50 <strong>{source.dataset.observed.deliveryP50.toFixed(1)} min</strong>, p90 <strong>{source.dataset.observed.deliveryP90.toFixed(1)} min</strong>, across {source.dataset.observed.n} delivered orders. The simulated A gives {a.metrics.deliveryP50.toFixed(1)} and {a.metrics.deliveryP90.toFixed(1)}. If the simulator runs fast, lower the speed under World settings until the p50 lines up, then compare strategies from there.
+            </p>
+          )}
           <section className="section-head"><h2>Where the differences live</h2></section>
           <div className="charts">
             <Histogram title="Delivery time" sub="Minutes from order to door. Dashed lines mark each strategy's p90." a={times(a.result)} b={b ? times(b.result) : undefined} labelA="A" labelB="B" unit="min" xLabel="Minutes"
@@ -818,7 +823,16 @@ function FileDrop({ label, value, onChange, placeholder }: { label: string; valu
   const [note, setNote] = useState('')
   const read = async (file: File | undefined) => {
     if (!file) return
-    if (file.size > 12_000_000) { setNote(`${file.name} is over 12 MB. Trim it first.`); return }
+    // A full Meituan export is about 120 MB; it is cut to one area-day here so the text box stays responsive.
+    const meituan = isMeituan(await file.slice(0, 4000).text())
+    if (file.size > (meituan ? 250_000_000 : 12_000_000)) { setNote(`${file.name} is over ${meituan ? 250 : 12} MB. Trim it first.`); return }
+    if (meituan && file.size > 2_000_000) {
+      setNote(`Reading ${file.name}`)
+      const cut = sliceMeituan(await file.text())
+      onChange(cut.text)
+      setNote(`Loaded ${file.name}. ${cut.note}`)
+      return
+    }
     onChange(await file.text())
     setNote(`Loaded ${file.name}`)
   }
@@ -844,11 +858,13 @@ function DataView({ dataset, onLoad }: { dataset: Dataset | null; onLoad(d: Data
   const [couriers, setCouriers] = useState('')
   const [errors, setErrors] = useState<string[]>([])
   const [warnings, setWarnings] = useState<string[]>([])
+  const [loadedWithSkips, setLoadedWithSkips] = useState(false)
   const submit = () => {
     const p = parseDataset(orders, couriers)
     setErrors(p.errors)
     setWarnings(p.warnings)
-    if (p.dataset && !p.errors.length) onLoad(p.dataset)
+    if (p.dataset) onLoad(p.dataset)
+    setLoadedWithSkips(!!p.dataset && p.errors.length > 0)
   }
   const span = dataset ? quantile(dataset.orders.map(o => o.createdAt), 1) : 0
   return (
@@ -859,7 +875,7 @@ function DataView({ dataset, onLoad }: { dataset: Dataset | null; onLoad(d: Data
       </section>
       {dataset && (
         <section className="card loaded">
-          <div><span className="eyebrow">Loaded</span><p className="applied-big">{dataset.orders.length} orders, {dataset.couriers.length} couriers</p><p className="muted small">Spanning {Math.round(span)} minutes.</p></div>
+          <div><span className="eyebrow">Loaded</span><p className="applied-big">{dataset.orders.length} orders, {dataset.couriers.length} couriers</p><p className="muted small">{dataset.name}, spanning {Math.round(span)} minutes.{dataset.observed ? ` Recorded delivery time in the file: p50 ${dataset.observed.deliveryP50.toFixed(1)} min, p90 ${dataset.observed.deliveryP90.toFixed(1)} min.` : ''}</p></div>
           <button type="button" className="btn btn-quiet" onClick={() => onLoad(null)}>Remove</button>
         </section>
       )}
@@ -871,13 +887,14 @@ function DataView({ dataset, onLoad }: { dataset: Dataset | null; onLoad(d: Data
         <button type="button" className="btn btn-red" disabled={!orders.trim()} onClick={submit}>Load and replay</button>
         <button type="button" className="btn btn-quiet" onClick={() => { const x = sampleCsv(); setOrders(x.orders); setCouriers(x.couriers); setErrors([]); setWarnings([]) }}>Fill with a synthetic sample</button>
       </div>
-      {errors.length > 0 && <div className="alert" role="alert"><strong>Fix these and load again.</strong><ul>{errors.map(e => <li key={e}>{e}</li>)}</ul></div>}
+      {errors.length > 0 && <div className="alert" role="alert"><strong>{loadedWithSkips ? 'Loaded the valid rows. These were skipped:' : 'Fix these and load again.'}</strong><ul>{errors.map(e => <li key={e}>{e}</li>)}</ul></div>}
       {warnings.length > 0 && <div className="note" role="status"><ul>{warnings.map(w => <li key={w}>{w}</li>)}</ul></div>}
       <section className="card format">
         <h3>Format</h3>
         <div className="format-grid">
-          <div><h4>Orders</h4><p className="muted small">Created time, store lat and lng, customer lat and lng, prep minutes, and optionally payout. Times can be minutes, HH:MM or ISO timestamps. With a payout, it is used as the courier's pay and the pay model is skipped.</p></div>
+          <div><h4>Orders</h4><p className="muted small">Created time, store lat and lng, customer lat and lng, prep minutes, and optionally payout. Times can be minutes, HH:MM, ISO timestamps or Unix epoch seconds, with an optional separate date column. With a payout, it is used as the courier's pay and the pay model is skipped. A file mixing cities or days keeps its busiest market and day.</p></div>
           <div><h4>Couriers</h4><p className="muted small">Shift start, shift end, start lat and lng. Leave this blank and a clearly labelled assumed fleet is added.</p></div>
+          <div><h4>Public datasets</h4><p className="muted small">Reads Meituan's open waybill export (<code>all_waybill_info_meituan_0322.csv</code> from the INFORMS TSL challenge) and the Kaggle food delivery layout (<code>Restaurant_latitude</code>, <code>Time_Orderd</code>, <code>Time_taken(min)</code>) as they come. <a href="/docs#formats">Details</a></p></div>
           <div><h4>JSON</h4><p className="muted small">An array, or one object with <code>orders</code> and <code>couriers</code> arrays, pasted in the orders box.</p></div>
         </div>
       </section>

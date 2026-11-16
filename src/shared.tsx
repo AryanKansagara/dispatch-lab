@@ -54,7 +54,7 @@ export function Footer() {
     <footer className="footer">
       <div className="footer-inner">
         <div className="footer-brand"><Monogram /> <strong>Dispatch Lab</strong></div>
-        <p>Built by Aryan Kansagara. Independent project, not affiliated with DoorDash.</p>
+        <p>Built by Aryan Kansagara. Independent project, not affiliated with DoorDash. <Link href="/docs" className="footer-link">How it works and data sources</Link></p>
         <p className="footer-note">Streets and restaurant locations come from OpenStreetMap (&copy; OpenStreetMap contributors, ODbL). Orders, couriers, prep times and pay are seeded synthetic data generated in your browser. None of it is DoorDash data, and results describe this model, not any real marketplace.</p>
       </div>
     </footer>

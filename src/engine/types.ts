@@ -30,6 +30,8 @@ export interface Dataset {
   /** Clock hour of minute 0, for display only. */
   startHour?: number
   speedMultiplier?: number
+  /** Delivery times recorded in an imported file, to set beside the simulated ones. */
+  observed?: { deliveryP50: number; deliveryP90: number; n: number }
 }
 
 export interface SimConfig {

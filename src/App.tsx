@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { Landing } from './Landing.tsx'
 
 const Tool = lazy(() => import('./Tool.tsx'))
+const Docs = lazy(() => import('./Docs.tsx'))
 
 export function go(href: string) {
   history.pushState({}, '', href)
@@ -18,6 +19,9 @@ export function App() {
   }, [])
   if (path === '/app' || path.startsWith('/app/')) {
     return <Suspense fallback={<div className="boot" role="status">Starting the simulator</div>}><Tool /></Suspense>
+  }
+  if (path === '/docs' || path === '/docs/') {
+    return <Suspense fallback={<div className="boot" role="status">Loading</div>}><Docs /></Suspense>
   }
   return <Landing />
 }

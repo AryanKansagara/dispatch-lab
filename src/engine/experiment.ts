@@ -45,11 +45,15 @@ export function normCdf(z: number): number {
   return z >= 0 ? 0.5 * (1 + erf) : 0.5 * (1 - erf)
 }
 
-/** Two-sided 95% Student t critical value (Cornish-Fisher expansion, accurate from about 3 df). */
+/** Exact two-sided 95% t critical values for 1 to 10 degrees of freedom, where the expansion below drifts. */
+const T975_TABLE = [12.7062, 4.3027, 3.1824, 2.7764, 2.5706, 2.4469, 2.3646, 2.306, 2.2622, 2.2281]
+
+/** Two-sided 95% Student t critical value: table up to 10 df, Cornish-Fisher expansion above. */
 export function t975(df: number): number {
   const z = 1.959964
   if (!Number.isFinite(df) || df > 1e6) return z
   const d = Math.max(df, 1)
+  if (d <= 10) return T975_TABLE[Math.floor(d) - 1]
   return z + (z ** 3 + z) / (4 * d) + (5 * z ** 5 + 16 * z ** 3 + 3 * z) / (96 * d ** 2) + (3 * z ** 7 + 19 * z ** 5 + 17 * z ** 3 - 15 * z) / (384 * d ** 3)
 }
 
