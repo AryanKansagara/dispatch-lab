@@ -437,13 +437,13 @@ function ReplayView({ s, update, source, sourceKey, cfg, cfgKey, startHour }: {
       <div className="replay-grid">
         <div className="replay-maps">
           <div className={s.compare ? 'maps two' : 'maps'}>
-            <CityMap result={a?.result ?? null} city={cityOf(source)} clock={clock} startHour={startHour}
+            <CityMap result={a?.result ?? null} city={cityOf(source)} plain={source?.kind === 'data'} clock={clock} startHour={startHour}
               selected={selected?.side === 'a' ? selected.index : -1}
               onSelect={i => setSelected(i >= 0 ? { side: 'a', index: i } : null)}
               label={<><span className="tag a">A</span> {labelA}{runA.busy && <span className="spinner tiny" />}</>}
               ariaLabel={`Animated city map for ${labelA}. Click a courier to see their route and pay, or use the courier list.`} />
             {s.compare && (
-              <CityMap result={b?.result ?? null} city={cityOf(source)} clock={clock} startHour={startHour}
+              <CityMap result={b?.result ?? null} city={cityOf(source)} plain={source?.kind === 'data'} clock={clock} startHour={startHour}
                 selected={selected?.side === 'b' ? selected.index : -1}
                 onSelect={i => setSelected(i >= 0 ? { side: 'b', index: i } : null)}
                 label={<><span className="tag b">B</span> {labelB}{runB.busy && <span className="spinner tiny" />}</>}

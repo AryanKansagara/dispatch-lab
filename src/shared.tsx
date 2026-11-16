@@ -55,7 +55,7 @@ export function Footer() {
       <div className="footer-inner">
         <div className="footer-brand"><Monogram /> <strong>Dispatch Lab</strong></div>
         <p>Built by Aryan Kansagara. Independent project, not affiliated with DoorDash. <Link href="/docs" className="footer-link">How it works and data sources</Link></p>
-        <p className="footer-note">Streets and restaurant locations come from OpenStreetMap (&copy; OpenStreetMap contributors, ODbL). Orders, couriers, prep times and pay are seeded synthetic data generated in your browser. None of it is DoorDash data, and results describe this model, not any real marketplace.</p>
+        <p className="footer-note">Streets and restaurant locations come from OpenStreetMap (&copy; OpenStreetMap contributors, ODbL). Orders, couriers, prep times and pay are seeded synthetic data generated in your browser, unless you import your own, which never leaves it. None of it is DoorDash data, and results describe this model, not any real marketplace.</p>
       </div>
     </footer>
   )
@@ -86,9 +86,9 @@ const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches
 export { reduced as prefersReducedMotion }
 
 /** A live city on canvas. Draws only when the shared clock moves or something visual changes. */
-export function CityMap({ result, city, clock, cover, focusX, selected = -1, onSelect, label, ariaLabel, children, startHour }: {
+export function CityMap({ result, city, clock, cover, focusX, selected = -1, onSelect, label, ariaLabel, children, startHour, plain }: {
   result: SimResult | null; city?: CityGeo | null; clock: Clock; cover?: boolean; focusX?: number; selected?: number; onSelect?(c: number): void
-  label?: ReactNode; ariaLabel: string; children?: ReactNode; startHour?: number
+  label?: ReactNode; ariaLabel: string; children?: ReactNode; startHour?: number; plain?: boolean
 }) {
   const wrap = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -125,12 +125,12 @@ export function CityMap({ result, city, clock, cover, focusX, selected = -1, onS
 
   useEffect(() => {
     if (!result) return
-    const s = new Scene(result, city)
+    const s = new Scene(result, city, plain)
     scene.current = s
     fit.current()
     // Canvas text uses the web font, so repaint when it arrives.
     void document.fonts?.ready.then(() => paint.current())
-  }, [result, city])
+  }, [result, city, plain])
 
   useEffect(() => { paint.current() }, [dark, selected])
 

@@ -17,6 +17,7 @@ Sources: [dispatch (2021)](https://careersatdoordash.com/blog/using-ml-and-optim
 - Real cities: Toronto, New York, San Francisco, Chicago, Los Angeles, Vancouver, Montreal, Waterloo and London ship ready to load, and search reaches any place OpenStreetMap knows (fetched live from Overpass, cached in the browser). Kitchens are real mapped restaurants, customers sit on real residential streets within 3 km of the centre, and only the main connected street network is kept, so no order lands across a river with no mapped bridge.
 - Couriers on the map follow the street network (A* over the OpenStreetMap graph, routed lazily as legs are drawn). Across the bundled cities real routes average 1.3 to 1.44 times straight-line distance, which is where the simulator's default 1.35 road factor sits.
 - Scenarios on top of any city: lunch rush, dinner peak, rain, courier shortage, or a fictional grid city. Or paste or upload CSV or JSON of your own orders and couriers.
+- Real public delivery data loads as it comes: Meituan's open waybill export from the 2025 INFORMS TSL challenge (cut to its busiest delivery area and hours, repeat dispatch offers merged, couriers inferred from accepted offers) and the Kaggle food delivery layout (multi-city, multi-day, NaN times and flipped coordinates handled). Recorded delivery times from the file are shown beside the simulated ones. Neither dataset is redistributed here; tests use fixtures written to match their layouts.
 - Discrete-event simulator: arrival, prep with forecast error, assignment, pickup, multi-stop routes, delivery. Distance is haversine times a road factor at a configurable speed.
 - Strategies: greedy nearest courier, batch at same store, hand-rolled Hungarian matching each tick, and a score-weighted optimizer with batching, food and pay sliders.
 - Metrics: delivery p50 and p90, food wait, temperature at the door from a cooling curve, late rate, utilization, pay per active hour, online hour and mile, stack share, worst-paid order inside a stack, platform cost per delivery.
@@ -24,6 +25,10 @@ Sources: [dispatch (2021)](https://careersatdoordash.com/blog/using-ml-and-optim
 - Sweep: Pareto frontier of the batching weight. Click a point to apply it.
 - Canvas city map with couriers, heating and cooling orders, linked stack routes, scrubber, speed control, courier drill-down and side-by-side compare.
 - Runs in Web Workers. Settings and seed live in a shareable URL. Light and dark themes.
+
+## Docs
+
+Formats, cleaning rules, reference numbers measured from the Meituan data, and model constants are at [/docs](https://dispatch-lab-tan.vercel.app/docs).
 
 ## Model assumptions
 

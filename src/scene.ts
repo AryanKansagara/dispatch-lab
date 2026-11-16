@@ -99,7 +99,11 @@ export class Scene {
   private SIN: number
   private SQUISH: number
 
-  constructor(r: SimResult, city?: CityGeo | null) {
+  /** Imported data has no street map, so the fictional river and blocks are left out. */
+  private plain: boolean
+
+  constructor(r: SimResult, city?: CityGeo | null, plain = false) {
+    this.plain = plain
     this.r = r
     this.city = city ?? null
     const view = this.city ? REAL_VIEW : GRID_VIEW
@@ -196,6 +200,11 @@ export class Scene {
     g.strokeStyle = pal.road
     g.lineWidth = Math.max(1, cell * this.scale * 0.14)
     for (let i = -reach; i <= reach; i++) { line(i * cell, -lim, i * cell, lim); line(-lim, i * cell, lim, i * cell) }
+    if (this.plain) {
+      this.staticLayer = c
+      this.staticKey = key
+      return c
+    }
     g.strokeStyle = pal.arterial
     g.lineWidth = Math.max(2, cell * this.scale * 0.3)
     for (let i = -reach; i <= reach; i++) {
