@@ -4,7 +4,7 @@ Replay a city's delivery marketplace under different dispatch strategies and see
 
 Live: https://dispatch-lab-tan.vercel.app
 
-Independent project, not affiliated with DoorDash. Streets and restaurant locations are real, from OpenStreetMap. Orders, couriers, prep times and pay are seeded synthetic data. None of it is DoorDash data, and results describe this model, not any real marketplace.
+ Streets and restaurant locations are real, from OpenStreetMap. Orders, couriers, prep times and pay are seeded synthetic data. None of it is DoorDash data, and results describe this model, not any real marketplace.
 
 ## The pain
 

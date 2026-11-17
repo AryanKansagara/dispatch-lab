@@ -82,7 +82,6 @@ export default function Docs() {
           <li><a href="https://careersatdoordash.com/blog/switchback-tests-and-randomized-experimentation-under-network-effects-at-doordash/">Switchback Tests and Randomized Experimentation Under Network Effects at DoorDash</a>, 2018.</li>
           <li>Cameron, Gelbach and Miller, Bootstrap-Based Improvements for Inference with Clustered Errors, 2008, for the few-cluster correction.</li>
         </ul>
-        <p className="muted">Independent project, not affiliated with DoorDash or Meituan.</p>
       </main>
       <Footer />
     </div>
