@@ -54,6 +54,17 @@ export default function Tool() {
     try { localStorage.setItem(SETTINGS_KEY, encoded) } catch { /* Storage full: the URL still holds state. */ }
   }, [s])
 
+  // A link pasted into this tab only changes the fragment, so the page does not reload. The app's own
+  // replaceState fires no hashchange.
+  useEffect(() => {
+    const onHash = () => {
+      const { hash } = location
+      if (hash.length > 1) setS(prev => decodeSettings(hash, prev))
+    }
+    addEventListener('hashchange', onHash)
+    return () => removeEventListener('hashchange', onHash)
+  }, [])
+
   useEffect(() => {
     if (!toast) return
     const id = setTimeout(() => setToast(''), 2800)
@@ -66,7 +77,7 @@ export default function Tool() {
   const source: Source | null = useCustom
     ? (dataset ? { kind: 'data', dataset } : null)
     : cityPending ? null : { kind: 'scenario', id: s.scenario as ScenarioId, seed: s.seed, city: cityState.city ?? undefined }
-  const sourceKey = useCustom ? `custom/${dataset?.name}/${dataset?.orders.length}/${dataset?.couriers.length}` : `${s.city}/${s.scenario}/${s.seed}`
+  const sourceKey = useCustom ? `custom/${s.seed}/${dataset?.name}/${dataset?.orders.length}/${dataset?.couriers.length}` : `${s.city}/${s.scenario}/${s.seed}`
   const cfg = configOf(s)
   const cfgKey = `${s.maxStack}/${s.speedKmh}/${s.roadFactor}`
   const startHour = useCustom ? dataset?.startHour : SCENARIOS[s.scenario as ScenarioId].startHour
