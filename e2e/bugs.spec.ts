@@ -3,7 +3,7 @@ import { overpass, searchCity, stub } from './osm.ts'
 
 // Open bugs, pinned. Each becomes a normal test in the pull request that fixes it.
 
-test.fail('#2 an experiment whose units all got one arm claims no result', async ({ page }) => {
+test('#2 an experiment whose units all got one arm claims no result', async ({ page }) => {
   await open(page, 'seed=4&tab=experiment&a=greedy.50.50.0&b=batch.50.50.0&days=2&rg=1&w=120')
   const power = page.locator('.stat', { hasText: 'Switchback power' }).locator('b')
   await expect(power).toBeVisible({ timeout: 60_000 })
