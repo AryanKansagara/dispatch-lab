@@ -55,9 +55,17 @@ test('#6 dates that cannot be read are reported, not folded into one day', async
   await expectRefused(page, /Order line 2: bad date.*Order line 3: bad date.*Order line 4: bad date/)
 })
 
-test.fail('#7 an open quote is an error, not a shorter file', async ({ page }) => {
+test('#7 an open quote is an error, not a shorter file', async ({ page }) => {
   await load(page, orders('a,1,10,20,10.01,20,10', 'b,2,10,20,10.01,20,"10', 'c,3,10,20,10.01,20,10'), ONE_COURIER)
-  await expect(page.getByRole('alert')).toContainText(/quote/, { timeout: 5_000 })
+  await expectRefused(page, /quote opened on line 3 is never closed/)
+})
+
+test('#7 shifted rows and entries that are not objects are reported', async ({ page }) => {
+  await load(page, paidOrders('a,1,10,20,10.01,20,10,8,25'), ONE_COURIER)
+  await expectRefused(page, /Order line 2: 9 values for 8 columns/)
+  await ordersBox(page).fill('[null]')
+  await page.getByRole('button', { name: 'Load and replay' }).click()
+  await expectRefused(page, /Order line 2: not an object/)
 })
 
 test.fail('#8 a run without deliveries has no per-delivery figures', async ({ page }) => {

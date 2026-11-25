@@ -181,28 +181,39 @@ export function resampleDay(base: Dataset, seed: number): Dataset {
   return { ...base, orders }
 }
 
-/** A small RFC-4180 reader: quoted fields, embedded commas, doubled quotes and CRLF. */
+/**
+ * A small RFC-4180 reader: quoted fields, embedded commas, doubled quotes and CRLF. A quote only opens
+ * a field at its start, so an inch mark is text. Throws where quoting breaks, because every row after
+ * that point could be swallowed into one cell.
+ */
 export function parseCsv(text: string): string[][] {
   const rows: string[][] = []
   let row: string[] = []
   let cell = ''
   let quoted = false
+  let closed = false
+  let line = 1
+  let openedAt = 0
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]
+    if (ch === '\n' || (ch === '\r' && text[i + 1] !== '\n')) line++
     if (quoted) {
       if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++ }
-      else if (ch === '"') quoted = false
+      else if (ch === '"') { quoted = false; closed = true }
       else cell += ch
-    } else if (ch === '"') quoted = true
-    else if (ch === ',') { row.push(cell); cell = '' }
+    } else if (ch === '"' && !closed && cell.trim() === '') { quoted = true; openedAt = line; cell = '' }
+    else if (ch === ',') { row.push(cell); cell = ''; closed = false }
     else if (ch === '\n' || ch === '\r') {
       if (ch === '\r' && text[i + 1] === '\n') i++
       row.push(cell)
       if (row.some(c => c.trim() !== '')) rows.push(row)
       row = []
       cell = ''
-    } else cell += ch
+      closed = false
+    } else if (closed && ch !== ' ' && ch !== '\t') throw new Error(`the quote opened on line ${openedAt} closes in the middle of a cell on line ${line}. Fix the quotes and load again.`)
+    else cell += ch
   }
+  if (quoted) throw new Error(`a quote opened on line ${openedAt} is never closed, so the rows after it cannot be read. The file may be cut off.`)
   row.push(cell)
   if (row.some(c => c.trim() !== '')) rows.push(row)
   return rows
@@ -210,18 +221,28 @@ export function parseCsv(text: string): string[][] {
 
 type Rec = Record<string, unknown>
 
-function recordsFrom(text: string, jsonKey: string): Rec[] {
+/** A row that cannot be matched to the columns, kept in place so it is reported by line. */
+class RowProblem {
+  text: string
+  constructor(text: string) { this.text = text }
+}
+
+function recordsFrom(text: string, jsonKey: string): (Rec | RowProblem)[] {
   const t = text.trim()
   if (!t) return []
   if (t[0] === '{' || t[0] === '[') {
     const parsed: unknown = JSON.parse(t)
     const list = Array.isArray(parsed) ? parsed : (parsed as Rec)[jsonKey]
     if (!Array.isArray(list)) throw new Error(`JSON must be an array or have a "${jsonKey}" array.`)
-    return list as Rec[]
+    return list.map(x => x && typeof x === 'object' && !Array.isArray(x) ? (x as Rec) : new RowProblem('not an object with named fields'))
   }
   const rows = parseCsv(t)
   const head = rows[0].map(h => h.trim())
-  return rows.slice(1).map(cells => Object.fromEntries(head.map((h, i) => [h, cells[i]?.trim() ?? ''])))
+  return rows.slice(1).map(cells => {
+    // A surplus value means the cells are shifted, for example by an unquoted decimal comma.
+    if (cells.slice(head.length).some(c => c.trim())) return new RowProblem(`${cells.length} values for ${head.length} columns`)
+    return Object.fromEntries(head.map((h, i) => [h, cells[i]?.trim() ?? '']))
+  })
 }
 
 const norm = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -447,6 +468,7 @@ function fromMeituan(recs: Rec[], warnings: string[]): { orders: Order[]; courie
   const pending: Order[] = []
   const preps: number[] = []
   let prebook = 0
+  let unusable = 0
   for (const [id, r] of byOrder) {
     if (s(r, 'is_prebook') === '1') { prebook++; continue }
     const placed = n(r, 'platform_order_time')
@@ -459,7 +481,7 @@ function fromMeituan(recs: Rec[], warnings: string[]): { orders: Order[]; courie
       customer: { lat: n(r, 'recipient_lat') / 1e6, lng: n(r, 'recipient_lng') / 1e6 },
       prepMin: prep,
     }
-    if (!(placed > 0) || !(o.store.lat || o.store.lng) || !(o.customer.lat || o.customer.lng)) continue
+    if (!(placed > 0) || !(o.store.lat || o.store.lng) || !(o.customer.lat || o.customer.lng)) { unusable++; continue }
     if (prep > 0 && prep <= 120) preps.push(prep)
     else pending.push(o)
     orders.push(o)
@@ -487,6 +509,7 @@ function fromMeituan(recs: Rec[], warnings: string[]): { orders: Order[]; courie
   }
   warnings.push(`Read ${byOrder.size} orders from ${recs.length} dispatch offers${dupes ? ` (${dupes} repeat offers merged)` : ''} and ${couriers.length} couriers who accepted one.`)
   if (prebook) warnings.push(`Pre-booked orders skipped, as they are scheduled rather than on-demand: ${prebook}.`)
+  if (unusable) warnings.push(`Orders skipped for having no readable order time, store or customer: ${unusable}.`)
   if (pending.length) warnings.push(`Orders with no usable kitchen estimate, given the area median of ${median.toFixed(1)} min: ${pending.length}.`)
   warnings.push('Courier shifts are inferred from their first accepted offer to their last drop-off in this window, so they are shorter than real shifts.')
   return { orders, couriers, observed }
@@ -502,8 +525,8 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
     ordersText = cut.text
     warnings.push(cut.note)
   }
-  let orderRecs: Rec[] = []
-  let courierRecs: Rec[] = []
+  let orderRecs: (Rec | RowProblem)[] = []
+  let courierRecs: (Rec | RowProblem)[] = []
   try { orderRecs = recordsFrom(ordersText, 'orders') } catch (e) { errors.push(`Orders: ${(e as Error).message}`) }
   if (errors.length) return { dataset: null, errors, warnings }
   try {
@@ -524,13 +547,16 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
   let orderKind: TimeKind = 'date'
   let unreadObserved = 0
   if (meituan) {
-    const m = fromMeituan(orderRecs, warnings)
+    const usable = orderRecs.filter((r): r is Rec => !(r instanceof RowProblem))
+    if (usable.length < orderRecs.length) warnings.push(`Rows skipped for having more values than columns: ${orderRecs.length - usable.length}.`)
+    const m = fromMeituan(usable, warnings)
     parsedOrders = m.orders
     parsedCouriers = courierRecs.length ? [] : m.couriers
     observedOf = m.observed
   }
   if (!meituan) orderRecs.forEach((rec, i) => {
     const line = i + 2
+    if (rec instanceof RowProblem) { bad.push(`Order line ${line}: ${rec.text}`); return }
     let createdAt = parseTime(pickField(rec, F.created))
     const dateCell = pickField(rec, F.date)
     // The date may come as a timestamp at midnight, as spreadsheets and pandas export it.
@@ -593,6 +619,7 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
   const courierKinds = new Map<TimeKind, number>()
   courierRecs.forEach((rec, i) => {
     const line = i + 2
+    if (rec instanceof RowProblem) { bad.push(`Courier line ${line}: ${rec.text}`); return }
     const startCell = pickField(rec, F.shiftStart)
     const endCell = pickField(rec, F.shiftEnd)
     const shiftStart = parseTime(startCell)
