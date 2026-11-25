@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { test, expect, orders, paidOrders, couriers, ONE_COURIER, open, tab, load, metric, expectRefused, stored, ordersBox } from './fixtures.ts'
 import { overpass, searchCity, stub } from './osm.ts'
 
@@ -146,12 +147,41 @@ test('#9 $0 stacks compare, and "No stacks" means there are none', async ({ page
   await expect(page.locator('main')).not.toContainText('NaN')
 })
 
-test.fail('#10 a timed-out OpenStreetMap answer is retried, not kept', async ({ page }) => {
-  const hits = await stub(page, [{ json: { ...overpass(15), remark: 'runtime error: Query timed out in "query" at line 1 after 91 seconds.' } }, { json: overpass() }])
+const TIMED_OUT = 'runtime error: Query timed out in "query" at line 1 after 91 seconds.'
+const cachedCities = (page: Page) => page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('dispatch-lab-city:')))
+
+test('#10 a timed-out OpenStreetMap answer is retried, not kept', async ({ page }) => {
+  const hits = await stub(page, [{ json: { ...overpass(15), remark: TIMED_OUT } }, { json: overpass() }])
   await open(page, 'cmp=0')
   await searchCity(page)
   await expect(page.locator('.verdict')).toBeVisible()
   expect(hits).toHaveLength(2)
+  expect(new Set(hits).size).toBe(2)
+  // What is remembered is the full answer: 25 places, not 15.
+  const saved = await page.evaluate(() => Object.entries(localStorage).filter(([k]) => k.startsWith('dispatch-lab-city:')).map(([, v]) => JSON.parse(v).stores.length))
+  expect(saved).toEqual([25])
+})
+
+for (const [name, answer] of [['empty', { elements: [] }], ['partial', overpass(15)]] as const) {
+  test(`#10 when every mirror times out with ${name} answers, the servers are busy`, async ({ page }) => {
+    const hits = await stub(page, [{ json: { ...answer, remark: TIMED_OUT } }])
+    await open(page, 'cmp=0')
+    await searchCity(page)
+    await expect(page.getByRole('alert')).toContainText('servers are busy right now')
+    await expect(page.getByRole('alert')).not.toContainText('restaurants are mapped')
+    await expect(page.locator('.verdict')).toHaveCount(0)
+    expect(hits).toHaveLength(2)
+    expect(await cachedCities(page)).toEqual([])
+  })
+}
+
+test('#10 a remark that is not an error does not block a full answer', async ({ page }) => {
+  const hits = await stub(page, [{ json: { ...overpass(), remark: 'runtime remark: served from a replica' } }])
+  await open(page, 'cmp=0')
+  await searchCity(page)
+  await expect(page.locator('.verdict')).toBeVisible()
+  expect(hits).toHaveLength(1)
+  expect(await cachedCities(page)).toHaveLength(1)
 })
 
 test('#11 a dataset that cannot be saved does not bring the old one back', async ({ page }) => {

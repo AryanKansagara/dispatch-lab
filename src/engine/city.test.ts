@@ -35,6 +35,21 @@ test('cityFromOverpass refuses an area too thin to simulate', () => {
   assert.throws(() => cityFromOverpass({ nope: 1 }, 'X', C), /unexpected response/)
 })
 
+test('cityFromOverpass refuses an answer cut off by a server error, and accepts other remarks', () => {
+  for (const remark of [
+    'runtime error: Query timed out in "query" at line 1 after 91 seconds.',
+    'runtime error: Query run out of memory using about 2048 MB of RAM.',
+    'line 1: parse error: Unknown type',
+  ]) {
+    for (const stores of [0, 5, 20]) assert.throws(() => cityFromOverpass({ ...fixture(stores), remark }, 'Test', C, 3), /stopped before finishing/, remark)
+    assert.throws(() => cityFromOverpass({ elements: [], remark }, 'Test', C, 3), /stopped before finishing/, remark)
+  }
+  for (const remark of ['runtime remark: served from a replica', 'Error-free run', '', null, 7]) {
+    assert.equal(cityFromOverpass({ ...fixture(20), remark }, 'Test', C, 3).stores.length, 21, String(remark))
+    assert.throws(() => cityFromOverpass({ ...fixture(5), remark }, 'Hamlet', C, 3), /Only 6 restaurants/)
+  }
+})
+
 test('addressPoints spaces customers along local streets inside the radius', () => {
   const geo = cityFromOverpass(fixture(20), 'Test', C, 3)
   const pts = addressPoints(geo, 0.06)
