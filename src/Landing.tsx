@@ -81,7 +81,7 @@ function Hero() {
         <div className="hero-numbers" aria-live="polite">
           <div><span>Efficiency</span><b>{m ? m.courierMinPerDelivery.toFixed(1) : '--'}</b><small>courier min per delivery</small><small>{m ? `${Math.round(m.stackShare * 100)}% of orders in stacks` : ''}</small></div>
           <div><span>Food</span><b>{m ? `${m.tempMean.toFixed(1)}°` : '--'}</b><small>C at the door</small><small>{m ? `${Math.round(m.coldRate * 100)}% arrive cold` : ''}</small></div>
-          <div><span>Courier</span><b>{m ? money(m.payPerActiveHour) : '--'}</b><small>per active hour</small><small>{m ? `${Math.round(m.hiddenLowPayRate * 100)}% of stacks hide a low-pay order` : ''}</small></div>
+          <div><span>Courier</span><b>{m ? money(m.payPerActiveHour) : '--'}</b><small>per active hour</small><small>{!m ? '' : Number.isNaN(m.hiddenLowPayRate) ? 'no stacks' : `${Math.round(m.hiddenLowPayRate * 100)}% of stacks hide a low-pay order`}</small></div>
         </div>
         {m && <div className="hero-tri"><TradeoffTriangle efficiency={(26 - m.courierMinPerDelivery) / 12} food={(m.tempMean - 46) / 16} pay={(m.payPerActiveHour - 16) / 20} size={96} /><p>Top: efficiency<br />Right: food<br />Left: courier pay</p></div>}
       </div>

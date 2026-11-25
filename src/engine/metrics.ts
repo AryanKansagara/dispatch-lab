@@ -47,7 +47,7 @@ export function stacksOf(r: SimResult): StackInfo[] {
   return out
 }
 
-/** A rate with nothing to divide by (no deliveries, no active or online time, no miles) is NaN: not available. */
+/** A rate with nothing to divide by (no deliveries, no active or online time, no miles, no stacks) is NaN: not available. */
 export interface Metrics {
   orders: number
   delivered: number
@@ -110,9 +110,9 @@ export function computeMetrics(r: SimResult): Metrics {
     payPerMile: miles ? pay / miles : NaN,
     stackShare: assigned ? inStacks / assigned : 0,
     avgStackSize: stacks.length ? inStacks / stacks.length : 1,
-    worstStackPay: lows.length ? Math.min(...lows) : 0,
-    medianLowestInStack: quantile(lows, 0.5),
-    hiddenLowPayRate: stacks.length ? lows.filter(l => l < r.cfg.lowPayLine).length / stacks.length : 0,
+    worstStackPay: lows.length ? Math.min(...lows) : NaN,
+    medianLowestInStack: lows.length ? quantile(lows, 0.5) : NaN,
+    hiddenLowPayRate: stacks.length ? lows.filter(l => l < r.cfg.lowPayLine).length / stacks.length : NaN,
     platformCost: done.length ? platform / done.length : NaN,
     milesPerDelivery: done.length ? miles / done.length : NaN,
     courierMinPerDelivery: done.length ? active / done.length : NaN,

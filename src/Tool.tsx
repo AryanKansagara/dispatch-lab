@@ -20,7 +20,7 @@ const pct = (v: number) => `${Math.round(v * 100)}%`
 const money = (v: number) => `$${v.toFixed(2)}`
 const fixed1 = (v: number) => v.toFixed(1)
 /** Figures with nothing to divide by are NaN. */
-const orNa = (v: number, f: (v: number) => string) => (Number.isNaN(v) ? 'n/a' : f(v))
+const orNa = (v: number, f: (v: number) => string, none = 'n/a') => (Number.isNaN(v) ? none : f(v))
 
 function loadInitial(): Settings {
   let base = DEFAULT_SETTINGS
@@ -307,7 +307,7 @@ function Transport({ clock, backlog, startHour }: { clock: Clock; backlog: numbe
   )
 }
 
-interface Row { label: string; get(m: Metrics): number; f(v: number): string; better: 'low' | 'high' | 'none'; group: string; hideZero?: boolean }
+interface Row { label: string; get(m: Metrics): number; f(v: number): string; better: 'low' | 'high' | 'none'; group: string; none?: string }
 const ROWS: Row[] = [
   { group: 'Batching efficiency', label: 'Orders in stacks', get: m => m.stackShare, f: pct, better: 'none' },
   { group: 'Batching efficiency', label: 'Courier minutes per delivery', get: m => m.courierMinPerDelivery, f: fixed1, better: 'low' },
@@ -324,9 +324,9 @@ const ROWS: Row[] = [
   { group: 'Courier pay', label: 'Pay per active hour', get: m => m.payPerActiveHour, f: money, better: 'high' },
   { group: 'Courier pay', label: 'Pay per online hour', get: m => m.payPerOnlineHour, f: money, better: 'high' },
   { group: 'Courier pay', label: 'Pay per mile', get: m => m.payPerMile, f: money, better: 'high' },
-  { group: 'Courier pay', label: 'Worst-paid order in a stack', get: m => m.worstStackPay, f: v => (v ? money(v) : 'No stacks'), better: 'high', hideZero: true },
-  { group: 'Courier pay', label: 'Typical lowest order per stack', get: m => m.medianLowestInStack, f: v => (v ? money(v) : 'No stacks'), better: 'high', hideZero: true },
-  { group: 'Courier pay', label: 'Stacks hiding an order under $4', get: m => m.hiddenLowPayRate, f: pct, better: 'low' },
+  { group: 'Courier pay', label: 'Worst-paid order in a stack', get: m => m.worstStackPay, f: money, better: 'high', none: 'No stacks' },
+  { group: 'Courier pay', label: 'Typical lowest order per stack', get: m => m.medianLowestInStack, f: money, better: 'high', none: 'No stacks' },
+  { group: 'Courier pay', label: 'Stacks hiding an order under $4', get: m => m.hiddenLowPayRate, f: pct, better: 'low', none: 'No stacks' },
 ]
 
 function MetricsTable({ a, b, labelA, labelB }: { a: Metrics; b?: Metrics; labelA: string; labelB?: string }) {
@@ -344,14 +344,14 @@ function MetricsTable({ a, b, labelA, labelB }: { a: Metrics; b?: Metrics; label
               const va = r.get(a)
               const vb = b ? r.get(b) : 0
               const d = vb - va
-              const comparable = !Number.isNaN(d) && !(r.hideZero && (!va || !vb))
+              const comparable = !Number.isNaN(d)
               const flat = r.f === pct ? Math.abs(d) < 0.005 : Math.abs(d) < 1e-6 || (Math.abs(va) > 1e-9 && Math.abs(d / va) < 0.005)
               const good = r.better === 'none' || flat ? 'flat' : (r.better === 'low') === d < 0 ? 'good' : 'bad'
               return (
                 <tr key={r.label}>
                   <th scope="row">{r.label}</th>
-                  <td className="num">{orNa(va, r.f)}</td>
-                  {b && <td className="num">{orNa(vb, r.f)}</td>}
+                  <td className="num">{orNa(va, r.f, r.none)}</td>
+                  {b && <td className="num">{orNa(vb, r.f, r.none)}</td>}
                   {b && (
                     <td className={`num delta ${comparable ? good : 'flat'}`}>
                       {!comparable ? 'n/a' : flat ? 'Same' : <>
@@ -814,7 +814,7 @@ function SweepView({ s, update, source, sourceKey, cfgKey }: { s: Settings; upda
                 <div><dt>At the door</dt><dd>{sel.metrics.tempMean.toFixed(1)}&deg;C</dd></div>
                 <div><dt>Per active hr</dt><dd>{orNa(sel.metrics.payPerActiveHour, money)}</dd></div>
                 <div><dt>Per online hr</dt><dd>{orNa(sel.metrics.payPerOnlineHour, money)}</dd></div>
-                <div><dt>Low-pay stacks</dt><dd>{pct(sel.metrics.hiddenLowPayRate)}</dd></div>
+                <div><dt>Low-pay stacks</dt><dd>{orNa(sel.metrics.hiddenLowPayRate, pct, 'No stacks')}</dd></div>
               </dl>
               <button type="button" className="btn btn-red wide" onClick={() => update({ tab: 'replay' })}>Watch it replay</button>
             </section>

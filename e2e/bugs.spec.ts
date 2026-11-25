@@ -121,10 +121,29 @@ test('#8 one strategy delivering and the other not is not a comparison', async (
   await expect(page.locator('main')).not.toContainText(/NaN|Infinity/)
 })
 
-test.fail('#9 a $0 order in a stack is shown as $0.00', async ({ page }) => {
+test('#9 a $0 order in a stack is shown as $0.00', async ({ page }) => {
   await load(page, paidOrders('a,0,10,20,10.02,20,5,0', 'b,0,10,20,10.02,20,5,12'), ONE_COURIER, 'a=batch.50.50.0&cmp=0')
   await expect(metric(page, 'Orders in stacks')).toHaveText('100%')
   await expect(metric(page, 'Worst-paid order in a stack')).toHaveText('$0.00', { timeout: 3_000 })
+  await expect(metric(page, 'Typical lowest order per stack')).toHaveText('$0.00')
+  await expect(metric(page, 'Stacks hiding an order under $4')).toHaveText('100%')
+})
+
+test('#9 $0 stacks compare, and "No stacks" means there are none', async ({ page }) => {
+  const rows = ['Worst-paid order in a stack', 'Typical lowest order per stack']
+  const paid = paidOrders('a,0,10,20,10.02,20,5,0', 'b,0,10,20,10.02,20,5,12')
+  await load(page, paid, ONE_COURIER, 'a=batch.50.50.0&b=batch.50.50.0&cmp=1')
+  for (const row of rows) {
+    await expect(metric(page, row, 1)).toHaveText('$0.00')
+    await expect(metric(page, row, 2)).toHaveText('Same')
+  }
+  await page.getByLabel('Strategy A').selectOption('greedy')
+  for (const row of [...rows, 'Stacks hiding an order under $4']) {
+    await expect(metric(page, row)).toHaveText('No stacks')
+    await expect(metric(page, row, 2)).toHaveText('n/a')
+  }
+  await expect(metric(page, rows[0], 1)).toHaveText('$0.00')
+  await expect(page.locator('main')).not.toContainText('NaN')
 })
 
 test.fail('#10 a timed-out OpenStreetMap answer is retried, not kept', async ({ page }) => {
