@@ -105,7 +105,7 @@ test.fail('#10 a timed-out OpenStreetMap answer is retried, not kept', async ({ 
   expect(hits).toHaveLength(2)
 })
 
-test.fail('#11 a dataset that cannot be saved does not bring the old one back', async ({ page }) => {
+test('#11 a dataset that cannot be saved does not bring the old one back', async ({ page }) => {
   await load(page, orders('old,1,10,20,10.01,20,10'), ONE_COURIER)
   await expect(page.locator('.verdict')).toBeVisible()
   await page.evaluate(() => {
@@ -119,7 +119,34 @@ test.fail('#11 a dataset that cannot be saved does not bring the old one back', 
   await ordersBox(page).fill(orders('new,1,10,20,10.01,20,10', 'new2,2,10,20,10.01,20,10'))
   await page.getByRole('button', { name: 'Load and replay' }).click()
   await expect(page.getByRole('status').filter({ hasText: 'too big to remember' })).toBeVisible()
+  await expect(metric(page, 'Never delivered')).toHaveText('0%')
   expect(await stored(page)).toBeNull()
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'No dataset loaded yet' })).toBeVisible()
+  await expect(page.locator('.verdict')).toHaveCount(0)
+  await tab(page, 'Your data')
+  await expect(page.getByText('Loaded', { exact: true })).toHaveCount(0)
+})
+
+test('#11 a dataset that fits is still saved, also after one that did not', async ({ page }) => {
+  await load(page, orders('old,1,10,20,10.01,20,10'), ONE_COURIER)
+  await expect(page.locator('.verdict')).toBeVisible()
+  await page.evaluate(() => {
+    const set = Storage.prototype.setItem
+    Storage.prototype.setItem = function (k, v) {
+      if (k === 'dispatch-lab-dataset' && v.includes('toobig')) throw new DOMException('full', 'QuotaExceededError')
+      set.call(this, k, v)
+    }
+  })
+  for (const id of ['toobig', 'small']) {
+    await tab(page, 'Your data')
+    await ordersBox(page).fill(orders(`${id},1,10,20,10.01,20,10`))
+    await page.getByRole('button', { name: 'Load and replay' }).click()
+    await expect(page.locator('.verdict')).toBeVisible()
+  }
+  await page.reload()
+  await expect(page.locator('.verdict')).toBeVisible()
+  expect((await stored(page))!.orders.map(o => o.id)).toEqual(['small'])
 })
 
 test.fail('#12 a share link pasted into the open tab applies', async ({ page }) => {

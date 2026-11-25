@@ -128,7 +128,11 @@ export default function Tool() {
           try {
             if (d) localStorage.setItem(DATA_KEY, JSON.stringify(d))
             else localStorage.removeItem(DATA_KEY)
-          } catch { setToast('This dataset is too big to remember across reloads, but it works for this session.') }
+          } catch {
+            // The failed write left the previous dataset saved; a reload must not bring it back as this one.
+            try { localStorage.removeItem(DATA_KEY) } catch { /* Storage blocked: nothing can be read back either. */ }
+            setToast('This dataset is too big to remember across reloads, but it works for this session.')
+          }
           update(d ? { scenario: 'custom', tab: 'replay' } : { scenario: 'dinner' })
         }} />}
       </main>
