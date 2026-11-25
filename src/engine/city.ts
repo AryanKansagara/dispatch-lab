@@ -80,9 +80,17 @@ interface OsmElement {
   tags?: Record<string, string>
 }
 
-/** Turns an Overpass response into a compact CityGeo. Throws when the area is too thin to simulate. */
+/**
+ * Overpass answers HTTP 200 with whatever it had when a query times out or runs out of memory, and says
+ * so in a remark: "runtime error: Query timed out in ...". Other remarks are notes on a full answer.
+ */
+const ERROR_REMARK = /\b(?:runtime|static|parse|encoding) error\b/i
+
+/** Turns an Overpass response into a compact CityGeo. Throws when it was cut off or the area is too thin to simulate. */
 export function cityFromOverpass(json: unknown, name: string, center: LatLng, radiusKm = RADIUS_KM, fetchedAt = new Date().toISOString().slice(0, 10)): CityGeo {
   const elements = (json as { elements?: OsmElement[] })?.elements
+  const remark = (json as { remark?: unknown } | null)?.remark
+  if (typeof remark === 'string' && ERROR_REMARK.test(remark)) throw new Error('the map server stopped before finishing')
   if (!Array.isArray(elements)) throw new Error('OpenStreetMap returned an unexpected response.')
   const stores: CityGeo['stores'] = []
   const streets: CityGeo['streets'] = []
