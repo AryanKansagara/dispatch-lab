@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { test, expect, orders, paidOrders, couriers, ONE_COURIER, open, tab, load, metric, expectRefused, stored, ordersBox } from './fixtures.ts'
 import { overpass, searchCity, stub } from './osm.ts'
 
-// Open bugs, pinned. Each becomes a normal test in the pull request that fixes it.
+// Bugs that were fixed, pinned by their issue number.
 
 test('#2 an experiment whose units all got one arm claims no result', async ({ page }) => {
   await open(page, 'seed=4&tab=experiment&a=greedy.50.50.0&b=batch.50.50.0&days=2&rg=1&w=120')
@@ -228,9 +228,72 @@ test('#11 a dataset that fits is still saved, also after one that did not', asyn
   expect((await stored(page))!.orders.map(o => o.id)).toEqual(['small'])
 })
 
-test.fail('#12 a share link pasted into the open tab applies', async ({ page }) => {
+test('#12 a share link pasted into the open tab applies', async ({ page }) => {
   await open(page, 'seed=5&cmp=0')
   await expect(page.locator('.verdict')).toBeVisible()
   await page.evaluate(() => { location.hash = 's=rain&city=grid&seed=99' })
   await expect(page.locator('.seed input')).toHaveValue('99', { timeout: 3_000 })
+  await expect(page.getByRole('button', { name: 'Rain' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page).toHaveURL(/#s=rain&city=grid&seed=99&/)
+  // The numbers are those of a fresh visit to the same link.
+  const pasted = await page.locator('.seed input').inputValue()
+  await expect(page.locator('.spinner')).toHaveCount(0)
+  const cost = await metric(page, 'Platform cost per delivery').textContent()
+  const link = page.url()
+  await page.goto('/')
+  await page.goto(link)
+  await expect(page.locator('.seed input')).toHaveValue(pasted)
+  await expect(metric(page, 'Platform cost per delivery')).toHaveText(cost!)
+})
+
+test('#12 a pasted link switches section and strategy, and Back returns to the settings before it', async ({ page }) => {
+  await open(page, 'seed=5&cmp=0&a=greedy.50.50.0')
+  await expect(page.locator('.verdict')).toContainText('Greedy')
+  await page.evaluate(() => { location.hash = 's=dinner&city=grid&seed=6&tab=data&a=batch.50.50.0&cmp=1' })
+  await expect(page.getByRole('heading', { name: 'Replay your own marketplace' })).toBeVisible()
+  await tab(page, 'Replay')
+  await expect(page.getByLabel('Strategy A')).toHaveValue('batch')
+  await page.goBack()
+  await expect(page.locator('.seed input')).toHaveValue('5')
+  await expect(page.getByLabel('Strategy A')).toHaveValue('greedy')
+  await expect(page.getByLabel('Compare side by side')).not.toBeChecked()
+})
+
+test('#12 a pasted hostile link is range-checked, and the app does not loop on its own updates', async ({ page }) => {
+  await open(page, 'seed=5&cmp=0')
+  await expect(page.locator('.verdict')).toBeVisible()
+  await page.evaluate(() => {
+    const w = window as unknown as { writes: number; changes: number }
+    w.writes = w.changes = 0
+    const replace = history.replaceState.bind(history)
+    history.replaceState = (...a) => { w.writes++; replace(...a) }
+    addEventListener('hashchange', () => { w.changes++ })
+    location.hash = 's=__proto__&city=%3Cimg%20src%3Dx%3E&seed=1e99&a=<b>.x.y.z&stack=999&speed=-4&tab=nope&cmp=2'
+  })
+  await expect(page.locator('.seed input')).toHaveValue('999999')
+  await expect(page).toHaveURL(/#s=lunch&city=grid&seed=999999&.*stack=4&speed=5&.*tab=replay/)
+  await page.locator('.seed input').fill('42')
+  await expect(page).toHaveURL(/seed=42&/)
+  expect(await page.evaluate(() => { const w = window as unknown as { writes: number; changes: number }; return [w.writes, w.changes] })).toEqual([2, 1])
+})
+
+test('#12 leaving the lab with Back does not write settings into another page', async ({ page }) => {
+  await page.goto('/#why')
+  await page.getByRole('link', { name: 'Open the lab' }).first().click()
+  await expect(page.locator('.city-select select')).toBeVisible()
+  await page.goBack()
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('trade-off')
+  await expect(page).toHaveURL(/\/#why$/)
+  await page.goForward()
+  await expect(page.locator('.city-select select')).toBeVisible()
+  await expect(page).toHaveURL(/\/app#s=dinner&city=toronto/)
+})
+
+test('#12 uploaded data: a pasted seed marks the experiment it resamples as stale', async ({ page }) => {
+  await load(page, orders('a,1,10,20,10.01,20,10', 'b,9,10,20,10.02,20,10'), ONE_COURIER)
+  await expect(page.locator('.verdict')).toBeVisible()
+  await tab(page, 'Experiment')
+  await expect(page.getByRole('button', { name: 'Run again' })).toBeVisible({ timeout: 60_000 })
+  await page.evaluate(() => { location.hash = location.hash.replace(/seed=\d+/, 'seed=99') })
+  await expect(page.getByRole('button', { name: 'Run with new settings' })).toBeVisible()
 })
