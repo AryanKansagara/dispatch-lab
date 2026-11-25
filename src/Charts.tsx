@@ -200,8 +200,12 @@ export function LineChart({ title, sub, a, b, labelA, labelB, xLabel, yLabel, xf
 const money = (v: number) => `$${v.toFixed(2)}`
 
 /** The frontier: x is courier minutes per delivery, y is food at the door, colour is courier pay. */
-export function FrontierChart({ points, selected, onPick, compact }: { points: SweepPoint[]; selected?: number; onPick?(batch: number): void; compact?: boolean }) {
+export function FrontierChart({ points: all, selected, onPick, compact }: { points: SweepPoint[]; selected?: number; onPick?(batch: number): void; compact?: boolean }) {
   const p: Plot = compact ? { ...PLOT, h: 310, b: 40, t: 30 } : { w: 960, h: 440, l: 44, r: 20, t: 34, b: 42 }
+  // Settings that delivered nothing have no minutes per delivery to place them by.
+  const points = all.filter(q => q.metrics.delivered > 0)
+  const missing = all.filter(q => !(q.metrics.delivered > 0)).map(q => Math.round(q.batch * 100)).join(', ')
+  if (!points.length) return <p className="empty" role="status">No setting delivered an order, so there is no frontier to draw.</p>
   const xs = points.map(q => q.metrics.courierMinPerDelivery)
   const ys = points.map(q => q.metrics.tempMean)
   const pays = points.map(q => q.metrics.payPerActiveHour)
@@ -257,6 +261,7 @@ export function FrontierChart({ points, selected, onPick, compact }: { points: S
       <div className="frontier-key">
         <span className="key"><i className="round" style={{ background: 'var(--a)' }} />On the frontier, numbered by batching weight</span>
         {points.some(q => !q.onFrontier) && <span className="key"><i className="round hollow" />Dominated: another setting beats it on all three sides</span>}
+        {missing && <span className="key">Not shown, delivered nothing: batching {missing}</span>}
         <span className="pay-scale"><span>{money(payLo)}</span><i /><span>{money(payHi)} per active hour</span></span>
       </div>
     </div>
@@ -378,10 +383,13 @@ export function TradeoffTriangle({ efficiency, food, pay, size = 180 }: { effici
     const a = -Math.PI / 2 + (i * 2 * Math.PI) / 3
     return `${(c + Math.cos(a) * R * f).toFixed(1)},${(c + 6 + Math.sin(a) * R * f).toFixed(1)}`
   }
-  const v = [efficiency, food, pay].map(x => Math.max(0.08, Math.min(1, x)))
+  // A side with no figure gets the smallest reach, never the best.
+  const known = [efficiency, food, pay].map(x => !Number.isNaN(x))
+  const v = [efficiency, food, pay].map((x, i) => known[i] ? Math.max(0.08, Math.min(1, x)) : 0.08)
+  const score = (i: number) => known[i] ? Math.round(v[i] * 100) : 'n/a'
   return (
     <svg className="triangle" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img"
-      aria-label={`Trade-off shape: efficiency ${Math.round(v[0] * 100)} of 100, food ${Math.round(v[1] * 100)}, courier pay ${Math.round(v[2] * 100)}.`}>
+      aria-label={`Trade-off shape: efficiency ${known[0] ? `${score(0)} of 100` : 'n/a'}, food ${score(1)}, courier pay ${score(2)}.`}>
       {[0.33, 0.66, 1].map(f => <polygon key={f} points={[0, 1, 2].map(i => pt(i, f)).join(' ')} className="tri-grid" />)}
       <polygon points={v.map((f, i) => pt(i, f)).join(' ')} className="tri-shape" />
       {v.map((f, i) => { const [x, y] = pt(i, f).split(','); return <circle key={i} cx={x} cy={y} r="4.5" className="tri-dot" /> })}

@@ -19,6 +19,8 @@ const labelOf = (s: StrategySpec) => (s.id === 'optimizer' ? `Optimizer, batchin
 const pct = (v: number) => `${Math.round(v * 100)}%`
 const money = (v: number) => `$${v.toFixed(2)}`
 const fixed1 = (v: number) => v.toFixed(1)
+/** Figures with nothing to divide by are NaN. */
+const orNa = (v: number, f: (v: number) => string) => (Number.isNaN(v) ? 'n/a' : f(v))
 
 function loadInitial(): Settings {
   let base = DEFAULT_SETTINGS
@@ -342,14 +344,14 @@ function MetricsTable({ a, b, labelA, labelB }: { a: Metrics; b?: Metrics; label
               const va = r.get(a)
               const vb = b ? r.get(b) : 0
               const d = vb - va
-              const comparable = !(r.hideZero && (!va || !vb))
+              const comparable = !Number.isNaN(d) && !(r.hideZero && (!va || !vb))
               const flat = r.f === pct ? Math.abs(d) < 0.005 : Math.abs(d) < 1e-6 || (Math.abs(va) > 1e-9 && Math.abs(d / va) < 0.005)
               const good = r.better === 'none' || flat ? 'flat' : (r.better === 'low') === d < 0 ? 'good' : 'bad'
               return (
                 <tr key={r.label}>
                   <th scope="row">{r.label}</th>
-                  <td className="num">{r.f(va)}</td>
-                  {b && <td className="num">{r.f(vb)}</td>}
+                  <td className="num">{orNa(va, r.f)}</td>
+                  {b && <td className="num">{orNa(vb, r.f)}</td>}
                   {b && (
                     <td className={`num delta ${comparable ? good : 'flat'}`}>
                       {!comparable ? 'n/a' : flat ? 'Same' : <>
@@ -369,7 +371,12 @@ function MetricsTable({ a, b, labelA, labelB }: { a: Metrics; b?: Metrics; label
 }
 
 /** Plain-language summary of the trade-off between the two running strategies. */
-function verdict(a: Metrics, b: Metrics, labelB: string): ReactNode {
+function verdict(a: Metrics, b: Metrics, labelA: string, labelB: string): ReactNode {
+  if (!a.delivered && !b.delivered) return <>Neither strategy delivered anything (0 of {a.orders}), so there is nothing to compare.</>
+  if (!a.delivered || !b.delivered) {
+    const [none, other, some] = a.delivered ? ['B', 'A', a] as const : ['A', 'B', b] as const
+    return <>{none} (<strong>{none === 'A' ? labelA : labelB}</strong>) delivered nothing, while {other} delivered {some.delivered} of {some.orders}, so their figures per delivery cannot be compared.</>
+  }
   const eff = (b.courierMinPerDelivery - a.courierMinPerDelivery) / a.courierMinPerDelivery
   const temp = b.tempMean - a.tempMean
   const p50 = b.deliveryP50 - a.deliveryP50
@@ -444,7 +451,7 @@ function ReplayView({ s, update, source, sourceKey, cfg, cfgKey, startHour }: {
       {a && (
         <section className="verdict" aria-live="polite">
           <div className="verdict-text">
-            {b ? <p>{verdict(a.metrics, b.metrics, labelB)}</p> : (
+            {b ? <p>{verdict(a.metrics, b.metrics, labelA, labelB)}</p> : !a.metrics.delivered ? <p><strong>{labelA}</strong> delivered nothing (0 of {a.metrics.orders}).</p> : (
               <p><strong>{labelA}</strong>: {pct(a.metrics.stackShare)} of orders in stacks, {a.metrics.tempMean.toFixed(1)}&deg;C at the door, {money(a.metrics.payPerActiveHour)} per active hour. Switch on compare to see what it trades away.</p>
             )}
           </div>
@@ -803,10 +810,10 @@ function SweepView({ s, update, source, sourceKey, cfgKey }: { s: Settings; upda
               <p className="applied-big">Batching {Math.round(sel.batch * 100)}</p>
               <dl className="courier-stats">
                 <div><dt>In stacks</dt><dd>{pct(sel.metrics.stackShare)}</dd></div>
-                <div><dt>Courier min</dt><dd>{sel.metrics.courierMinPerDelivery.toFixed(1)}</dd></div>
+                <div><dt>Courier min</dt><dd>{orNa(sel.metrics.courierMinPerDelivery, fixed1)}</dd></div>
                 <div><dt>At the door</dt><dd>{sel.metrics.tempMean.toFixed(1)}&deg;C</dd></div>
-                <div><dt>Per active hr</dt><dd>{money(sel.metrics.payPerActiveHour)}</dd></div>
-                <div><dt>Per online hr</dt><dd>{money(sel.metrics.payPerOnlineHour)}</dd></div>
+                <div><dt>Per active hr</dt><dd>{orNa(sel.metrics.payPerActiveHour, money)}</dd></div>
+                <div><dt>Per online hr</dt><dd>{orNa(sel.metrics.payPerOnlineHour, money)}</dd></div>
                 <div><dt>Low-pay stacks</dt><dd>{pct(sel.metrics.hiddenLowPayRate)}</dd></div>
               </dl>
               <button type="button" className="btn btn-red wide" onClick={() => update({ tab: 'replay' })}>Watch it replay</button>
@@ -828,7 +835,7 @@ function SweepView({ s, update, source, sourceKey, cfgKey }: { s: Settings; upda
             <table className="metrics">
               <thead><tr><th scope="col">Batching</th><th scope="col" className="num">In stacks</th><th scope="col" className="num">Courier min per delivery</th><th scope="col" className="num">At the door</th><th scope="col" className="num">P90 min</th><th scope="col" className="num">Per active hr</th><th scope="col" className="num">Cost per delivery</th><th scope="col" className="num">Frontier</th></tr></thead>
               <tbody>{points.map(p => (
-                <tr key={p.batch}><th scope="row">{Math.round(p.batch * 100)}</th><td className="num">{pct(p.metrics.stackShare)}</td><td className="num">{p.metrics.courierMinPerDelivery.toFixed(1)}</td><td className="num">{p.metrics.tempMean.toFixed(1)}&deg;C</td><td className="num">{p.metrics.deliveryP90.toFixed(1)}</td><td className="num">{money(p.metrics.payPerActiveHour)}</td><td className="num">{money(p.metrics.platformCost)}</td><td className="num">{p.onFrontier ? 'Yes' : 'No'}</td></tr>
+                <tr key={p.batch}><th scope="row">{Math.round(p.batch * 100)}</th><td className="num">{pct(p.metrics.stackShare)}</td><td className="num">{orNa(p.metrics.courierMinPerDelivery, fixed1)}</td><td className="num">{p.metrics.tempMean.toFixed(1)}&deg;C</td><td className="num">{p.metrics.deliveryP90.toFixed(1)}</td><td className="num">{orNa(p.metrics.payPerActiveHour, money)}</td><td className="num">{orNa(p.metrics.platformCost, money)}</td><td className="num">{p.onFrontier ? 'Yes' : 'No'}</td></tr>
               ))}</tbody>
             </table>
           </div>

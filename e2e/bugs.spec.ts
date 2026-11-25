@@ -84,11 +84,41 @@ test('#7 shifted rows and entries that are not objects are reported', async ({ p
   await expectRefused(page, /Order line 2: not an object/)
 })
 
-test.fail('#8 a run without deliveries has no per-delivery figures', async ({ page }) => {
+test('#8 a run without deliveries has no per-delivery figures', async ({ page }) => {
   await load(page, orders('a,100,10,20,10.01,20,10'), couriers('C1,0,50,10,20'), 'a=greedy.50.50.0&b=batch.50.50.0&cmp=1')
   await expect(metric(page, 'Never delivered')).toHaveText('100%')
   await expect(page.locator('.verdict')).not.toContainText(/NaN|Infinity/, { timeout: 3_000 })
-  await expect(metric(page, 'Courier minutes per delivery')).toHaveText('n/a')
+  await expect(page.locator('.verdict')).toContainText('Neither strategy delivered anything (0 of 1)')
+  for (const row of ['Courier minutes per delivery', 'Miles per delivery', 'Platform cost per delivery', 'Pay per active hour']) {
+    for (const col of [0, 1, 2]) await expect(metric(page, row, col)).toHaveText('n/a')
+  }
+  await expect(page.getByRole('img', { name: /^Trade-off shape: efficiency n\/a/ })).toHaveCount(2)
+  await expect(page.locator('main')).not.toContainText(/NaN|Infinity/)
+  await page.getByLabel('Compare side by side').uncheck()
+  await expect(page.locator('.verdict')).toContainText('delivered nothing (0 of 1)')
+  // The sweep: no frontier, and no free-looking zeros.
+  await tab(page, 'Sweep')
+  await expect(page.getByText('No setting delivered an order')).toBeVisible({ timeout: 60_000 })
+  await page.getByText('View as a table').click()
+  const row = page.locator('.table-details tbody tr').first()
+  await expect(row.locator('td').nth(1)).toHaveText('n/a')
+  await expect(row.locator('td').nth(5)).toHaveText('n/a')
+  await expect(page.locator('.table-details tbody')).not.toContainText(/Yes|NaN|Infinity/)
+})
+
+test('#8 one strategy delivering and the other not is not a comparison', async ({ page }) => {
+  const two = orders('a,1,10.02,20,10.03,20,5', 'b,1,10.02,20,10.03,20,5')
+  await load(page, two, couriers('C1,0,2,10,20'), 'a=greedy.50.50.0&b=optimizer.100.50.0&cmp=1')
+  await expect(page.locator('.verdict')).toContainText('B (Optimizer, batching 100) delivered nothing, while A delivered 1 of 2')
+  await expect(metric(page, 'Courier minutes per delivery')).toHaveText(/^\d+\.\d$/)
+  await expect(metric(page, 'Courier minutes per delivery', 1)).toHaveText('n/a')
+  await expect(metric(page, 'Courier minutes per delivery', 2)).toHaveText('n/a')
+  await expect(page.locator('main')).not.toContainText(/NaN|Infinity/)
+  await tab(page, 'Sweep')
+  await page.getByRole('slider', { name: 'Days per point' }).fill('1')
+  await expect(page.getByText(/Not shown, delivered nothing: batching .*100/)).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByRole('button', { name: /^Apply batching weight 100\./ })).toHaveCount(0)
+  await expect(page.locator('main')).not.toContainText(/NaN|Infinity/)
 })
 
 test.fail('#9 a $0 order in a stack is shown as $0.00', async ({ page }) => {

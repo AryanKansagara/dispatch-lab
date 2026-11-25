@@ -8,6 +8,12 @@ export interface SweepPoint { batch: number; metrics: Metrics; onFrontier: boole
 /** The three sides of the trade-off, each higher-is-better: efficiency, food, courier pay. */
 export const tradeoffVector = (m: Metrics) => [-m.courierMinPerDelivery, m.tempMean, m.payPerActiveHour]
 
+/** Mean over the days that have a figure; NaN when none does. */
+const meanKnown = (v: number[]) => {
+  const known = v.filter(x => !Number.isNaN(x))
+  return known.length ? mean(known) : NaN
+}
+
 /** Averages over days so the frontier reflects the policy rather than one day's noise. */
 export function runSweep(
   makeDay: (day: number) => Dataset, base: StrategySpec, cfg: SimConfig, steps: number, days: number,
@@ -24,11 +30,12 @@ export function runSweep(
       onProgress?.(++done, total)
     }
     const metrics = Object.fromEntries(
-      (Object.keys(runs[0]) as (keyof Metrics)[]).map(k => [k, mean(runs.map(r => r[k]))]),
+      (Object.keys(runs[0]) as (keyof Metrics)[]).map(k => [k, meanKnown(runs.map(r => r[k]))]),
     ) as unknown as Metrics
     return { batch, metrics, onFrontier: false }
   })
-  const front = new Set(paretoFront(points.map(p => tradeoffVector(p.metrics))))
-  points.forEach((p, i) => { p.onFrontier = front.has(i) })
+  // A setting that never delivers has no efficiency to trade, so it cannot be on the frontier.
+  const delivering = points.filter(p => p.metrics.delivered > 0)
+  for (const i of paretoFront(delivering.map(p => tradeoffVector(p.metrics)))) delivering[i].onFrontier = true
   return points
 }
