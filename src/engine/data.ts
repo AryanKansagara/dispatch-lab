@@ -249,6 +249,19 @@ export function parseTime(v: unknown): number {
   return Number.isNaN(ms) ? NaN : ms / 60000
 }
 
+/**
+ * Minutes count from an unknown start, clock times repeat every day, and dates are absolute. The three
+ * cannot be put on one axis, so a list keeps one kind and couriers must use the same kind as orders.
+ */
+type TimeKind = 'minutes' | 'clock' | 'date'
+const KIND_LABEL: Record<TimeKind, string> = { minutes: 'plain minutes (like 90)', clock: 'clock times (like 18:05)', date: 'dated times (like 2024-03-02T18:05 or epoch seconds)' }
+
+function timeKind(v: unknown): TimeKind {
+  const s = String(v ?? '').trim()
+  if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s) > 1e8 ? 'date' : 'minutes'
+  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s) ? 'clock' : 'date'
+}
+
 /** A calendar date as minutes since the Unix epoch (UTC): YYYY-MM-DD, or day first as DD-MM-YYYY or DD/MM/YYYY. */
 function parseDate(v: unknown): number {
   const s = String(v ?? '').trim()
@@ -292,6 +305,18 @@ export interface ParseResult { dataset: Dataset | null; errors: string[]; warnin
 export const MAX_ORDERS = 5000
 const MAX_COURIERS = 800
 const MAX_ROWS = 200_000
+/** Longest shift that can be real rather than a unit mix-up; it also bounds the length of a run. */
+const MAX_SHIFT_MIN = 7 * 1440
+
+/** Whether a saved dataset has the shape and length the simulator can run. */
+export function isRunnable(d: unknown): d is Dataset {
+  const x = d as Dataset | null
+  const pos = (p?: LatLng) => Number.isFinite(p?.lat) && Number.isFinite(p?.lng)
+  const inRun = (t: number) => Number.isFinite(t) && t >= 0 && t <= MAX_SHIFT_MIN + 4 * 1440
+  return !!x && typeof x.name === 'string' && Array.isArray(x.orders) && Array.isArray(x.couriers) && x.orders.length > 0 &&
+    x.orders.every(o => !!o && inRun(o.createdAt) && Number.isFinite(o.prepMin) && pos(o.store) && pos(o.customer)) &&
+    x.couriers.every(c => !!c && inRun(c.shiftStart) && inRun(c.shiftEnd) && pos(c.start))
+}
 
 /**
  * Meituan's public waybill export from the 2025 INFORMS TSL challenge (all_waybill_info_meituan).
@@ -445,6 +470,8 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
   let parsedOrders: Order[] = []
   let parsedCouriers: Courier[] = []
   let observedOf = new Map<Order, number>()
+  const rows: { o: Order; line: number; kind: TimeKind }[] = []
+  let orderKind: TimeKind = 'date'
   if (meituan) {
     const m = fromMeituan(orderRecs, warnings)
     parsedOrders = m.orders
@@ -456,7 +483,8 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
     let createdAt = parseTime(pickField(rec, F.created))
     const day = parseDate(pickField(rec, F.date))
     // A separate date column turns clock times into absolute ones, so multi-day files sort correctly.
-    if (!Number.isNaN(day) && createdAt >= 0 && createdAt < 1440) createdAt += day
+    let kind = timeKind(pickField(rec, F.created))
+    if (!Number.isNaN(day) && createdAt >= 0 && createdAt < 1440) { createdAt += day; kind = 'date' }
     const sLat = num(pickField(rec, F.storeLat))
     const sLng = num(pickField(rec, F.storeLng))
     const cLat = num(pickField(rec, F.custLat))
@@ -470,7 +498,7 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
     }
     const payout = num(pickField(rec, F.payout))
     const missing = [
-      Number.isNaN(createdAt) && 'created time',
+      !Number.isFinite(createdAt) && 'created time',
       (!Number.isFinite(sLat) || !Number.isFinite(sLng)) && 'store lat/lng',
       (!Number.isFinite(cLat) || !Number.isFinite(cLng)) && 'customer lat/lng',
       (!Number.isFinite(prep) || prep < 0) && 'prep time',
@@ -485,20 +513,44 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
       prepMin: prep,
       ...(Number.isFinite(payout) && payout >= 0 ? { payout } : {}),
     }
-    parsedOrders.push(o)
+    rows.push({ o, line, kind })
     const seen = num(pickField(rec, F.observed))
     if (seen > 0) observedOf.set(o, seen)
   })
+  if (!meituan && rows.length) {
+    const count = (k: TimeKind) => rows.filter(r => r.kind === k).length
+    const [first, second] = (Object.keys(KIND_LABEL) as TimeKind[]).sort((a, b) => count(b) - count(a))
+    if (count(first) === count(second)) {
+      return { dataset: null, errors: [...bad.slice(0, 8), `Created times are half ${KIND_LABEL[first]} and half ${KIND_LABEL[second]}, which cannot be put on one timeline. Use one kind.`], warnings }
+    }
+    orderKind = first
+    for (const r of rows) {
+      if (r.kind === first) parsedOrders.push(r.o)
+      else bad.push(`Order line ${r.line}: created time is not in ${KIND_LABEL[first]} like the other rows`)
+    }
+  }
+  const courierKinds = new Map<TimeKind, number>()
   courierRecs.forEach((rec, i) => {
     const line = i + 2
-    const shiftStart = parseTime(pickField(rec, F.shiftStart))
-    const shiftEnd = parseTime(pickField(rec, F.shiftEnd))
+    const startCell = pickField(rec, F.shiftStart)
+    const endCell = pickField(rec, F.shiftEnd)
+    const shiftStart = parseTime(startCell)
+    let shiftEnd = parseTime(endCell)
+    const kind = timeKind(startCell)
+    if (Number.isFinite(shiftStart) && Number.isFinite(shiftEnd)) {
+      if (kind !== timeKind(endCell)) { bad.push(`Courier line ${line}: shift start and shift end are different kinds of time`); return }
+      // 18:00 to 02:00 ends the next day.
+      if (kind === 'clock' && shiftEnd < shiftStart) shiftEnd += 1440
+      if (shiftEnd - shiftStart > MAX_SHIFT_MIN) { bad.push(`Courier line ${line}: the shift is longer than 7 days`); return }
+    }
     const lat = num(pickField(rec, F.startLat))
     const lng = num(pickField(rec, F.startLng))
-    if (Number.isNaN(shiftStart) || Number.isNaN(shiftEnd) || !(shiftEnd > shiftStart) || !validPos(lat, lng) || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    if (!Number.isFinite(shiftStart) || !Number.isFinite(shiftEnd) || !(shiftEnd > shiftStart) || !validPos(lat, lng) || !Number.isFinite(lat) || !Number.isFinite(lng)) {
       bad.push(`Courier line ${line}: needs shift start before shift end, and a start position`)
       return
     }
+    courierKinds.set(kind, (courierKinds.get(kind) ?? 0) + 1)
+    if (kind !== orderKind) { bad.push(`Courier line ${line}: shift is not in ${KIND_LABEL[orderKind]} like the orders`); return }
     parsedCouriers.push({ id: String(pickField(rec, ['id', 'courierid']) ?? `C${i + 1}`), shiftStart, shiftEnd, start: { lat, lng } })
   })
   if (bad.length) errors.push(...bad.slice(0, 8), ...(bad.length > 8 ? [`and ${bad.length - 8} more bad rows`] : []))
@@ -509,6 +561,23 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
   parsedOrders = parsedOrders.filter(o => !(o.store.lat === 0 && o.store.lng === 0) && !(o.customer.lat === 0 && o.customer.lng === 0) && haversineKm(o.store, o.customer) <= 50)
   if (parsedOrders.length < before) warnings.push(`${before - parsedOrders.length} orders skipped with the store over 50 km from the customer or at 0,0, which points to broken coordinates.`)
   if (!parsedOrders.length) return { dataset: null, errors: errors.length ? errors : ['No valid orders.'], warnings }
+
+  // Couriers who were given must be used or explained, never swapped for an invented fleet.
+  const given = courierRecs.length
+  const noFleet = (why: string): ParseResult => ({ dataset: null, errors: [`${why} Fix the couriers, or clear that box to use an assumed fleet.`, ...errors], warnings })
+  if (given && !parsedCouriers.length) {
+    const other = [...courierKinds.keys()].find(k => k !== orderKind)
+    return noFleet(other && courierKinds.size === 1
+      ? `Orders use ${KIND_LABEL[orderKind]} but couriers use ${KIND_LABEL[other]}, which cannot be put on one timeline.`
+      : `None of the ${given} courier rows can be used.`)
+  }
+  // Late-night orders in clock times belong to the evening's shift when only that shift covers them.
+  if (orderKind === 'clock' && !meituan && parsedCouriers.some(c => c.shiftEnd > 1440)) {
+    const covered = (t: number) => parsedCouriers.some(c => t >= c.shiftStart && t <= c.shiftEnd)
+    const late = parsedOrders.filter(o => !covered(o.createdAt) && covered(o.createdAt + 1440))
+    late.forEach(o => { o.createdAt += 1440 })
+    if (late.length) warnings.push(`Orders after midnight placed in the overnight shift, as the next day: ${late.length}.`)
+  }
 
   // One run models one market on one day. A file mixing cities or days keeps its biggest slice.
   const cell = (o: Order) => `${Math.round(o.store.lat * 2)}|${Math.round(o.store.lng * 2)}`
@@ -538,6 +607,14 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
     warnings.push(`Orders span ${days.size} days, so the busiest day${label} was kept: ${parsedOrders.length} of ${total} orders.`)
   }
   if (parsedOrders.length > MAX_ORDERS) return { dataset: null, errors: [`${parsedOrders.length} orders is over the ${MAX_ORDERS} limit for a browser run.`], warnings }
+
+  // A shift more than a day from every order can only be a wrong date.
+  const firstAt = Math.min(...parsedOrders.map(o => o.createdAt))
+  const lastAt = Math.max(...parsedOrders.map(o => o.createdAt))
+  const near = parsedCouriers.filter(c => c.shiftEnd >= firstAt - 1440 && c.shiftStart <= lastAt + 1440 && c.shiftEnd - c.shiftStart <= MAX_SHIFT_MIN)
+  if (near.length < parsedCouriers.length) warnings.push(`Couriers dropped for a shift more than a day from every order, or over 7 days long: ${parsedCouriers.length - near.length}.`)
+  parsedCouriers = near
+  if (given && !parsedCouriers.length) return noFleet('No courier works in the market and on the day of the kept orders.')
 
   const observed = parsedOrders.filter(o => observedOf.has(o)).map(o => observedOf.get(o)!)
 

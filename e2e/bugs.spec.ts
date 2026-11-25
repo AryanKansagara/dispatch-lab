@@ -1,4 +1,4 @@
-import { test, expect, orders, paidOrders, couriers, ONE_COURIER, open, tab, load, metric, stored, ordersBox } from './fixtures.ts'
+import { test, expect, orders, paidOrders, couriers, ONE_COURIER, open, tab, load, metric, expectRefused, stored, ordersBox } from './fixtures.ts'
 import { overpass, searchCity, stub } from './osm.ts'
 
 // Open bugs, pinned. Each becomes a normal test in the pull request that fixes it.
@@ -17,10 +17,21 @@ test.fail('#3 skipped rows and the assumed fleet are reported beside the results
   await expect(page.getByText(/assumed fleet of 4/)).toBeVisible()
 })
 
-test.fail('#4 dated orders with clock-time couriers are explained, not run', async ({ page }) => {
-  test.setTimeout(60_000)
+test('#4 dated orders with clock-time couriers are explained, not run', async ({ page }) => {
   await load(page, orders('a,2024-03-02T18:00:00Z,10,20,10.01,20,10'), couriers('C1,17:00,23:00,10,20'))
-  await expect(page.getByRole('alert')).toContainText(/clock/, { timeout: 10_000 })
+  await expectRefused(page, /Orders use dated times .* but couriers use clock times/)
+})
+
+test('#4 a saved dataset that cannot run is dropped instead of crashing every visit', async ({ page }) => {
+  await page.goto('/docs')
+  await page.evaluate(() => localStorage.setItem('dispatch-lab-dataset', JSON.stringify({
+    name: 'Your data', synthetic: false,
+    orders: [{ id: 'a', createdAt: 28489020, store: { lat: 10, lng: 20 }, customer: { lat: 10.01, lng: 20 }, prepMin: 10 }],
+    couriers: [{ id: 'C1', shiftStart: 0, shiftEnd: 360, start: { lat: 10, lng: 20 } }],
+  })))
+  await page.goto('/app#s=custom&city=grid&cmp=0')
+  await expect(page.getByRole('heading', { name: 'No dataset loaded yet' })).toBeVisible()
+  expect(await stored(page)).toBeNull()
 })
 
 test.fail('#5 a $8.25 payout is used as given', async ({ page }) => {
