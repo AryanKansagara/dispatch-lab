@@ -32,6 +32,8 @@ export interface Dataset {
   speedMultiplier?: number
   /** Delivery times recorded in an imported file, to set beside the simulated ones. */
   observed?: { deliveryP50: number; deliveryP90: number; n: number }
+  /** What an import skipped or assumed, kept with the data so results are never shown without it. */
+  notes?: { skipped: string[]; warnings: string[] }
 }
 
 export interface SimConfig {

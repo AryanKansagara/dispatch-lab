@@ -4,7 +4,7 @@ import { startTask, useRun, type ExperimentOutput, type Request, type Source, ty
 import { loadCity, searchPlaces, useCity, type Place } from './cities.ts'
 import { Clock, clockLabel } from './clock.ts'
 import { cityLabel, parseCityKey, PRESETS, searchedKey, type CityGeo } from './engine/city.ts'
-import { isMeituan, parseDataset, sampleCsv, SCENARIOS, sliceMeituan, type ScenarioId } from './engine/data.ts'
+import { isMeituan, isRunnable, parseDataset, sampleCsv, SCENARIOS, sliceMeituan, type ScenarioId } from './engine/data.ts'
 import { daysForPower, OUTCOMES, powerAt, type OutcomeId } from './engine/experiment.ts'
 import { quantile, stacksOf, tempAt, type Metrics } from './engine/metrics.ts'
 import { configOf, decodeSettings, DEFAULT_SETTINGS, encodeSettings, type Settings, type Tab } from './engine/settings.ts'
@@ -32,7 +32,11 @@ function loadInitial(): Settings {
 function loadDataset(): Dataset | null {
   try {
     const raw = localStorage.getItem(DATA_KEY)
-    return raw ? (JSON.parse(raw) as Dataset) : null
+    const saved: unknown = raw ? JSON.parse(raw) : null
+    if (isRunnable(saved)) return saved
+    // Saved by an older version, or damaged: running it would break the page on every visit.
+    localStorage.removeItem(DATA_KEY)
+    return null
   } catch { return null }
 }
 
@@ -113,6 +117,7 @@ export default function Tool() {
       </div>
 
       <main className="tool-main">
+        {useCustom && s.tab !== 'data' && dataset?.notes && <ImportNotes notes={dataset.notes} />}
         {cityPending && s.tab !== 'data' ? <CityStatus cityKey={s.city} error={cityState.error} onGrid={() => update({ city: 'grid' })} onPreset={() => update({ city: 'toronto' })} /> : <>
           {s.tab === 'replay' && <ReplayView s={s} update={update} source={source} sourceKey={sourceKey} cfg={cfg} cfgKey={cfgKey} startHour={startHour} />}
           {s.tab === 'experiment' && (source ? <ExperimentView s={s} update={update} source={source} sourceKey={sourceKey} cfgKey={cfgKey} /> : <NeedData update={update} />)}
@@ -211,6 +216,19 @@ function CityStatus({ cityKey, error, onGrid, onPreset }: { cityKey: string; err
         <button type="button" className="btn btn-red" onClick={onPreset}>Use Toronto</button>
         <button type="button" className="btn btn-quiet" onClick={onGrid}>Use the fictional city</button>
       </div>
+    </div>
+  )
+}
+
+/** Says what the import skipped or assumed, beside every result drawn from it. */
+function ImportNotes({ notes }: { notes: NonNullable<Dataset['notes']> }) {
+  const skipped = Array.isArray(notes.skipped) ? notes.skipped : []
+  const warnings = Array.isArray(notes.warnings) ? notes.warnings : []
+  if (!skipped.length && !warnings.length) return null
+  return (
+    <div className="note import-notes" role="note" aria-label="Import report">
+      {warnings.length > 0 && <ul>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
+      {skipped.length > 0 && <><strong>These rows were skipped, so the results cover the valid rows only:</strong><ul>{skipped.map((e, i) => <li key={i}>{e}</li>)}</ul></>}
     </div>
   )
 }
@@ -592,7 +610,13 @@ function milesUntil(r: SimResult, c: number, t: number): number {
   return all > 0 ? courier.miles * (done / all) : 0
 }
 
-const daysText = (d: number) => (!Number.isFinite(d) ? 'Never' : d > 365 ? 'Over a year' : `${d} ${d === 1 ? 'day' : 'days'}`)
+const daysText = (d: number) => Number.isNaN(d) ? 'n/a' : (!Number.isFinite(d) ? 'Never' : d > 365 ? 'Over a year' : `${d} ${d === 1 ? 'day' : 'days'}`)
+
+const NO_TEST = {
+  'empty-arm': 'Too few orders for a naive A/B.',
+  'few-clusters': 'Too few orders for a naive A/B.',
+  'no-variation': 'This outcome never varied.',
+}
 
 function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings; update(p: Partial<Settings>): void; source: Source; sourceKey: string; cfgKey: string }) {
   const [result, setResult] = useState<ExperimentOutput | null>(null)
@@ -624,6 +648,7 @@ function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings;
   const meta = OUTCOMES[metric]
   const target = o ? Math.max(Math.abs(o.control) * (effectPct / 100), 1e-6) : 0
   const f = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)} ${meta.unit}`
+  const power = o ? powerAt(target, o.switchback.se) : NaN
   const signFlip = o && Math.abs(o.truth) > 1e-6 && Math.sign(o.naive.diff) !== Math.sign(o.truth) && (o.naive.lo > 0 || o.naive.hi < 0)
   const missesTruth = o && (o.naive.lo > o.truth || o.naive.hi < o.truth)
   const sbCovers = o && o.switchback.lo <= o.truth && o.switchback.hi >= o.truth
@@ -680,8 +705,13 @@ function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings;
           <section className="exp-hero card">
             <div className="exp-claim">
               <span className="eyebrow">Interference bias, {meta.label.toLowerCase()}</span>
-              <p className="exp-big">{signFlip ? 'Naive A/B gets the sign wrong.' : missesTruth ? `Naive A/B misses the truth by ${Math.round(biasShare * 100)}%.` : 'Naive A/B lands near the truth here.'}</p>
-              <p>The effect of running B everywhere is <b>{f(o.truth)}</b>. The naive test reports <b>{f(o.naive.diff)}</b> with an interval{missesTruth ? ' that excludes the truth' : ' that includes it'}. The switchback reports <b>{f(o.switchback.diff)}</b>, and its wider interval {sbCovers ? 'covers the truth' : 'still misses it, most likely because couriers and stack partners carry across units. Try a longer window'}.</p>
+              <p className="exp-big">{signFlip ? 'Naive A/B gets the sign wrong.' : missesTruth ? `Naive A/B misses the truth by ${Math.round(biasShare * 100)}%.` : o.naive.why ? NO_TEST[o.naive.why] : 'Naive A/B lands near the truth here.'}</p>
+              <p>The effect of running B everywhere is <b>{f(o.truth)}</b>. {o.naive.why === 'empty-arm' ? <>The naive test has nothing to compare: every order drew the same arm.</>
+                : <>The naive test reports <b>{f(o.naive.diff)}</b> {o.naive.why ? `without an interval, because ${o.naive.why === 'no-variation' ? 'this outcome never varied' : 'an arm got a single order'}` : `with an interval${missesTruth ? ' that excludes the truth' : ' that includes it'}`}.</>}
+                {' '}{o.switchback.why === 'empty-arm' ? <>The switchback has nothing to compare: all {result.units} of its units drew the same arm. Add days or regions, or shorten the window.</>
+                : o.switchback.why === 'few-clusters' ? <>The switchback reports <b>{f(o.switchback.diff)}</b> without an interval, because one of its arms ran in a single region-day. Add days or regions.</>
+                : o.switchback.why ? <>The switchback reports <b>{f(o.switchback.diff)}</b> without an interval, because this outcome never varied.</>
+                : <>The switchback reports <b>{f(o.switchback.diff)}</b>, and its wider interval {sbCovers ? 'covers the truth' : 'still misses it, most likely because couriers and stack partners carry across units. Try a longer window'}.</>}</p>
             </div>
             <div className="exp-plot" data-tip-root>
               <EstimateChart o={o} unit={meta.unit} />
@@ -689,7 +719,7 @@ function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings;
           </section>
 
           <div className="stat-row">
-            <div className="stat"><span>Switchback power, {result.days} days</span><b>{pct(powerAt(target, o.switchback.se))}</b><small>to detect {target.toFixed(2)} {meta.unit}</small></div>
+            <div className="stat"><span>Switchback power, {result.days} days</span><b>{Number.isNaN(power) ? 'n/a' : pct(power)}</b><small>{Number.isNaN(power) ? 'No standard error to work from' : `to detect ${target.toFixed(2)} ${meta.unit}`}</small></div>
             <div className="stat accent"><span>Run needed for 80% power</span><b>{daysText(daysForPower(target, o.switchback.se, result.days))}</b><small>{result.windows * result.regions} units a day, clustered by region and day</small></div>
             <div className="stat"><span>What naive A/B would promise</span><b>{daysText(daysForPower(target, o.naive.se, result.days))}</b><small>False comfort: its error bar ignores interference</small></div>
             <div className="stat"><span>Units analysed</span><b>{result.units}</b><small>{result.ordersPerDay} orders a day on average</small></div>
@@ -711,13 +741,14 @@ function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings;
               <tbody>
                 {(Object.keys(OUTCOMES) as OutcomeId[]).map(k => {
                   const r = result.outcomes[k]
-                  const v = (x: number) => `${x > 0 ? '+' : ''}${x.toFixed(2)}`
+                  const v = (x: number) => Number.isNaN(x) ? 'n/a' : `${x > 0 ? '+' : ''}${x.toFixed(2)}`
+                  const ci = (e: typeof r.naive) => e.why ? '[no interval]' : `[${v(e.lo)}, ${v(e.hi)}]`
                   return (
                     <tr key={k}>
                       <th scope="row">{OUTCOMES[k].label} ({OUTCOMES[k].unit})</th>
                       <td className="num strong">{v(r.truth)}</td>
-                      <td className="num">{v(r.switchback.diff)} <small>[{v(r.switchback.lo)}, {v(r.switchback.hi)}]</small></td>
-                      <td className="num">{v(r.naive.diff)} <small>[{v(r.naive.lo)}, {v(r.naive.hi)}]</small></td>
+                      <td className="num">{v(r.switchback.diff)} <small>{ci(r.switchback)}</small></td>
+                      <td className="num">{v(r.naive.diff)} <small>{ci(r.naive)}</small></td>
                       <td className="num">{v(r.naiveBias)}</td>
                       <td className="num">{v(r.switchbackBias)}</td>
                     </tr>
@@ -858,13 +889,11 @@ function DataView({ dataset, onLoad }: { dataset: Dataset | null; onLoad(d: Data
   const [couriers, setCouriers] = useState('')
   const [errors, setErrors] = useState<string[]>([])
   const [warnings, setWarnings] = useState<string[]>([])
-  const [loadedWithSkips, setLoadedWithSkips] = useState(false)
   const submit = () => {
     const p = parseDataset(orders, couriers)
     setErrors(p.errors)
     setWarnings(p.warnings)
-    if (p.dataset) onLoad(p.dataset)
-    setLoadedWithSkips(!!p.dataset && p.errors.length > 0)
+    if (p.dataset) onLoad(p.errors.length || p.warnings.length ? { ...p.dataset, notes: { skipped: p.errors, warnings: p.warnings } } : p.dataset)
   }
   const span = dataset ? quantile(dataset.orders.map(o => o.createdAt), 1) : 0
   return (
@@ -879,6 +908,7 @@ function DataView({ dataset, onLoad }: { dataset: Dataset | null; onLoad(d: Data
           <button type="button" className="btn btn-quiet" onClick={() => onLoad(null)}>Remove</button>
         </section>
       )}
+      {dataset?.notes && <ImportNotes notes={dataset.notes} />}
       <div className="data-grid">
         <FileDrop label="Orders" value={orders} onChange={setOrders} placeholder={'order_id,created_min,store_lat,store_lng,customer_lat,customer_lng,prep_min,payout\nO1,4.5,39.51,-98.33,39.49,-98.36,12,8.25'} />
         <FileDrop label="Couriers (optional)" value={couriers} onChange={setCouriers} placeholder={'courier_id,shift_start,shift_end,start_lat,start_lng\nC1,0,180,39.50,-98.35'} />
@@ -887,7 +917,7 @@ function DataView({ dataset, onLoad }: { dataset: Dataset | null; onLoad(d: Data
         <button type="button" className="btn btn-red" disabled={!orders.trim()} onClick={submit}>Load and replay</button>
         <button type="button" className="btn btn-quiet" onClick={() => { const x = sampleCsv(); setOrders(x.orders); setCouriers(x.couriers); setErrors([]); setWarnings([]) }}>Fill with a synthetic sample</button>
       </div>
-      {errors.length > 0 && <div className="alert" role="alert"><strong>{loadedWithSkips ? 'Loaded the valid rows. These were skipped:' : 'Fix these and load again.'}</strong><ul>{errors.map(e => <li key={e}>{e}</li>)}</ul></div>}
+      {errors.length > 0 && <div className="alert" role="alert"><strong>Fix these and load again.</strong><ul>{errors.map(e => <li key={e}>{e}</li>)}</ul></div>}
       {warnings.length > 0 && <div className="note" role="status"><ul>{warnings.map(w => <li key={w}>{w}</li>)}</ul></div>}
       <section className="card format">
         <h3>Format</h3>
