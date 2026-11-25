@@ -34,9 +34,14 @@ test('#4 a saved dataset that cannot run is dropped instead of crashing every vi
   expect(await stored(page)).toBeNull()
 })
 
-test.fail('#5 a $8.25 payout is used as given', async ({ page }) => {
+test('#5 a $8.25 payout is used as given', async ({ page }) => {
   await load(page, paidOrders('a,0,10,20,10.04,20,10,$8.25'), ONE_COURIER)
-  await expect(metric(page, 'Platform cost per delivery')).toHaveText('$8.25', { timeout: 5_000 })
+  await expect(metric(page, 'Platform cost per delivery')).toHaveText('$8.25')
+})
+
+test('#5 a payout that cannot be read whole is reported, not repriced', async ({ page }) => {
+  await load(page, paidOrders('a,0,10,20,10.04,20,10,"8,25"'), ONE_COURIER)
+  await expectRefused(page, /Order line 2: bad payout/)
 })
 
 test.fail('#6 a decimal comma is not read as a date in 2001', async ({ page }) => {
