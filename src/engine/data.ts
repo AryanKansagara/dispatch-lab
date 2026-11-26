@@ -280,6 +280,19 @@ function timeKind(v: unknown): TimeKind {
   return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s) ? 'clock' : 'date'
 }
 
+/**
+ * Minutes count from an unknown start, clock times repeat every day, and dates are absolute. The three
+ * cannot be put on one axis, so a list keeps one kind and couriers must use the same kind as orders.
+ */
+type TimeKind = 'minutes' | 'clock' | 'date'
+const KIND_LABEL: Record<TimeKind, string> = { minutes: 'plain minutes (like 90)', clock: 'clock times (like 18:05)', date: 'dated times (like 2024-03-02T18:05 or epoch seconds)' }
+
+function timeKind(v: unknown): TimeKind {
+  const s = String(v ?? '').trim()
+  if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s) > 1e8 ? 'date' : 'minutes'
+  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s) ? 'clock' : 'date'
+}
+
 /** A calendar date as minutes since the Unix epoch (UTC): YYYY-MM-DD, or day first as DD-MM-YYYY or DD/MM/YYYY. */
 function parseDate(v: unknown): number {
   const s = String(v ?? '').trim()
