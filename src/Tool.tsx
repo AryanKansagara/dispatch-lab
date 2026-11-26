@@ -113,6 +113,7 @@ export default function Tool() {
       </div>
 
       <main className="tool-main">
+        {useCustom && s.tab !== 'data' && dataset?.notes && <ImportNotes notes={dataset.notes} />}
         {cityPending && s.tab !== 'data' ? <CityStatus cityKey={s.city} error={cityState.error} onGrid={() => update({ city: 'grid' })} onPreset={() => update({ city: 'toronto' })} /> : <>
           {s.tab === 'replay' && <ReplayView s={s} update={update} source={source} sourceKey={sourceKey} cfg={cfg} cfgKey={cfgKey} startHour={startHour} />}
           {s.tab === 'experiment' && (source ? <ExperimentView s={s} update={update} source={source} sourceKey={sourceKey} cfgKey={cfgKey} /> : <NeedData update={update} />)}
@@ -211,6 +212,19 @@ function CityStatus({ cityKey, error, onGrid, onPreset }: { cityKey: string; err
         <button type="button" className="btn btn-red" onClick={onPreset}>Use Toronto</button>
         <button type="button" className="btn btn-quiet" onClick={onGrid}>Use the fictional city</button>
       </div>
+    </div>
+  )
+}
+
+/** Says what the import skipped or assumed, beside every result drawn from it. */
+function ImportNotes({ notes }: { notes: NonNullable<Dataset['notes']> }) {
+  const skipped = Array.isArray(notes.skipped) ? notes.skipped : []
+  const warnings = Array.isArray(notes.warnings) ? notes.warnings : []
+  if (!skipped.length && !warnings.length) return null
+  return (
+    <div className="note import-notes" role="note" aria-label="Import report">
+      {warnings.length > 0 && <ul>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
+      {skipped.length > 0 && <><strong>These rows were skipped, so the results cover the valid rows only:</strong><ul>{skipped.map((e, i) => <li key={i}>{e}</li>)}</ul></>}
     </div>
   )
 }
@@ -871,13 +885,11 @@ function DataView({ dataset, onLoad }: { dataset: Dataset | null; onLoad(d: Data
   const [couriers, setCouriers] = useState('')
   const [errors, setErrors] = useState<string[]>([])
   const [warnings, setWarnings] = useState<string[]>([])
-  const [loadedWithSkips, setLoadedWithSkips] = useState(false)
   const submit = () => {
     const p = parseDataset(orders, couriers)
     setErrors(p.errors)
     setWarnings(p.warnings)
-    if (p.dataset) onLoad(p.dataset)
-    setLoadedWithSkips(!!p.dataset && p.errors.length > 0)
+    if (p.dataset) onLoad(p.errors.length || p.warnings.length ? { ...p.dataset, notes: { skipped: p.errors, warnings: p.warnings } } : p.dataset)
   }
   const span = dataset ? quantile(dataset.orders.map(o => o.createdAt), 1) : 0
   return (
@@ -892,6 +904,7 @@ function DataView({ dataset, onLoad }: { dataset: Dataset | null; onLoad(d: Data
           <button type="button" className="btn btn-quiet" onClick={() => onLoad(null)}>Remove</button>
         </section>
       )}
+      {dataset?.notes && <ImportNotes notes={dataset.notes} />}
       <div className="data-grid">
         <FileDrop label="Orders" value={orders} onChange={setOrders} placeholder={'order_id,created_min,store_lat,store_lng,customer_lat,customer_lng,prep_min,payout\nO1,4.5,39.51,-98.33,39.49,-98.36,12,8.25'} />
         <FileDrop label="Couriers (optional)" value={couriers} onChange={setCouriers} placeholder={'courier_id,shift_start,shift_end,start_lat,start_lng\nC1,0,180,39.50,-98.35'} />
@@ -900,7 +913,7 @@ function DataView({ dataset, onLoad }: { dataset: Dataset | null; onLoad(d: Data
         <button type="button" className="btn btn-red" disabled={!orders.trim()} onClick={submit}>Load and replay</button>
         <button type="button" className="btn btn-quiet" onClick={() => { const x = sampleCsv(); setOrders(x.orders); setCouriers(x.couriers); setErrors([]); setWarnings([]) }}>Fill with a synthetic sample</button>
       </div>
-      {errors.length > 0 && <div className="alert" role="alert"><strong>{loadedWithSkips ? 'Loaded the valid rows. These were skipped:' : 'Fix these and load again.'}</strong><ul>{errors.map(e => <li key={e}>{e}</li>)}</ul></div>}
+      {errors.length > 0 && <div className="alert" role="alert"><strong>Fix these and load again.</strong><ul>{errors.map(e => <li key={e}>{e}</li>)}</ul></div>}
       {warnings.length > 0 && <div className="note" role="status"><ul>{warnings.map(w => <li key={w}>{w}</li>)}</ul></div>}
       <section className="card format">
         <h3>Format</h3>
