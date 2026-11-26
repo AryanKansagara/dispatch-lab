@@ -4,7 +4,7 @@ import { startTask, useRun, type ExperimentOutput, type Request, type Source, ty
 import { loadCity, searchPlaces, useCity, type Place } from './cities.ts'
 import { Clock, clockLabel } from './clock.ts'
 import { cityLabel, parseCityKey, PRESETS, searchedKey, type CityGeo } from './engine/city.ts'
-import { isMeituan, parseDataset, sampleCsv, SCENARIOS, sliceMeituan, type ScenarioId } from './engine/data.ts'
+import { isMeituan, isRunnable, parseDataset, sampleCsv, SCENARIOS, sliceMeituan, type ScenarioId } from './engine/data.ts'
 import { daysForPower, OUTCOMES, powerAt, type OutcomeId } from './engine/experiment.ts'
 import { quantile, stacksOf, tempAt, type Metrics } from './engine/metrics.ts'
 import { configOf, decodeSettings, DEFAULT_SETTINGS, encodeSettings, type Settings, type Tab } from './engine/settings.ts'
@@ -32,7 +32,11 @@ function loadInitial(): Settings {
 function loadDataset(): Dataset | null {
   try {
     const raw = localStorage.getItem(DATA_KEY)
-    return raw ? (JSON.parse(raw) as Dataset) : null
+    const saved: unknown = raw ? JSON.parse(raw) : null
+    if (isRunnable(saved)) return saved
+    // Saved by an older version, or damaged: running it would break the page on every visit.
+    localStorage.removeItem(DATA_KEY)
+    return null
   } catch { return null }
 }
 
