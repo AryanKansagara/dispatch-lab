@@ -592,7 +592,13 @@ function milesUntil(r: SimResult, c: number, t: number): number {
   return all > 0 ? courier.miles * (done / all) : 0
 }
 
-const daysText = (d: number) => (!Number.isFinite(d) ? 'Never' : d > 365 ? 'Over a year' : `${d} ${d === 1 ? 'day' : 'days'}`)
+const daysText = (d: number) => Number.isNaN(d) ? 'n/a' : (!Number.isFinite(d) ? 'Never' : d > 365 ? 'Over a year' : `${d} ${d === 1 ? 'day' : 'days'}`)
+
+const NO_TEST = {
+  'empty-arm': 'Too few orders for a naive A/B.',
+  'few-clusters': 'Too few orders for a naive A/B.',
+  'no-variation': 'This outcome never varied.',
+}
 
 function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings; update(p: Partial<Settings>): void; source: Source; sourceKey: string; cfgKey: string }) {
   const [result, setResult] = useState<ExperimentOutput | null>(null)
@@ -624,6 +630,7 @@ function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings;
   const meta = OUTCOMES[metric]
   const target = o ? Math.max(Math.abs(o.control) * (effectPct / 100), 1e-6) : 0
   const f = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)} ${meta.unit}`
+  const power = o ? powerAt(target, o.switchback.se) : NaN
   const signFlip = o && Math.abs(o.truth) > 1e-6 && Math.sign(o.naive.diff) !== Math.sign(o.truth) && (o.naive.lo > 0 || o.naive.hi < 0)
   const missesTruth = o && (o.naive.lo > o.truth || o.naive.hi < o.truth)
   const sbCovers = o && o.switchback.lo <= o.truth && o.switchback.hi >= o.truth
@@ -680,8 +687,13 @@ function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings;
           <section className="exp-hero card">
             <div className="exp-claim">
               <span className="eyebrow">Interference bias, {meta.label.toLowerCase()}</span>
-              <p className="exp-big">{signFlip ? 'Naive A/B gets the sign wrong.' : missesTruth ? `Naive A/B misses the truth by ${Math.round(biasShare * 100)}%.` : 'Naive A/B lands near the truth here.'}</p>
-              <p>The effect of running B everywhere is <b>{f(o.truth)}</b>. The naive test reports <b>{f(o.naive.diff)}</b> with an interval{missesTruth ? ' that excludes the truth' : ' that includes it'}. The switchback reports <b>{f(o.switchback.diff)}</b>, and its wider interval {sbCovers ? 'covers the truth' : 'still misses it, most likely because couriers and stack partners carry across units. Try a longer window'}.</p>
+              <p className="exp-big">{signFlip ? 'Naive A/B gets the sign wrong.' : missesTruth ? `Naive A/B misses the truth by ${Math.round(biasShare * 100)}%.` : o.naive.why ? NO_TEST[o.naive.why] : 'Naive A/B lands near the truth here.'}</p>
+              <p>The effect of running B everywhere is <b>{f(o.truth)}</b>. {o.naive.why === 'empty-arm' ? <>The naive test has nothing to compare: every order drew the same arm.</>
+                : <>The naive test reports <b>{f(o.naive.diff)}</b> {o.naive.why ? `without an interval, because ${o.naive.why === 'no-variation' ? 'this outcome never varied' : 'an arm got a single order'}` : `with an interval${missesTruth ? ' that excludes the truth' : ' that includes it'}`}.</>}
+                {' '}{o.switchback.why === 'empty-arm' ? <>The switchback has nothing to compare: all {result.units} of its units drew the same arm. Add days or regions, or shorten the window.</>
+                : o.switchback.why === 'few-clusters' ? <>The switchback reports <b>{f(o.switchback.diff)}</b> without an interval, because one of its arms ran in a single region-day. Add days or regions.</>
+                : o.switchback.why ? <>The switchback reports <b>{f(o.switchback.diff)}</b> without an interval, because this outcome never varied.</>
+                : <>The switchback reports <b>{f(o.switchback.diff)}</b>, and its wider interval {sbCovers ? 'covers the truth' : 'still misses it, most likely because couriers and stack partners carry across units. Try a longer window'}.</>}</p>
             </div>
             <div className="exp-plot" data-tip-root>
               <EstimateChart o={o} unit={meta.unit} />
@@ -689,7 +701,7 @@ function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings;
           </section>
 
           <div className="stat-row">
-            <div className="stat"><span>Switchback power, {result.days} days</span><b>{pct(powerAt(target, o.switchback.se))}</b><small>to detect {target.toFixed(2)} {meta.unit}</small></div>
+            <div className="stat"><span>Switchback power, {result.days} days</span><b>{Number.isNaN(power) ? 'n/a' : pct(power)}</b><small>{Number.isNaN(power) ? 'No standard error to work from' : `to detect ${target.toFixed(2)} ${meta.unit}`}</small></div>
             <div className="stat accent"><span>Run needed for 80% power</span><b>{daysText(daysForPower(target, o.switchback.se, result.days))}</b><small>{result.windows * result.regions} units a day, clustered by region and day</small></div>
             <div className="stat"><span>What naive A/B would promise</span><b>{daysText(daysForPower(target, o.naive.se, result.days))}</b><small>False comfort: its error bar ignores interference</small></div>
             <div className="stat"><span>Units analysed</span><b>{result.units}</b><small>{result.ordersPerDay} orders a day on average</small></div>
@@ -711,13 +723,14 @@ function ExperimentView({ s, update, source, sourceKey, cfgKey }: { s: Settings;
               <tbody>
                 {(Object.keys(OUTCOMES) as OutcomeId[]).map(k => {
                   const r = result.outcomes[k]
-                  const v = (x: number) => `${x > 0 ? '+' : ''}${x.toFixed(2)}`
+                  const v = (x: number) => Number.isNaN(x) ? 'n/a' : `${x > 0 ? '+' : ''}${x.toFixed(2)}`
+                  const ci = (e: typeof r.naive) => e.why ? '[no interval]' : `[${v(e.lo)}, ${v(e.hi)}]`
                   return (
                     <tr key={k}>
                       <th scope="row">{OUTCOMES[k].label} ({OUTCOMES[k].unit})</th>
                       <td className="num strong">{v(r.truth)}</td>
-                      <td className="num">{v(r.switchback.diff)} <small>[{v(r.switchback.lo)}, {v(r.switchback.hi)}]</small></td>
-                      <td className="num">{v(r.naive.diff)} <small>[{v(r.naive.lo)}, {v(r.naive.hi)}]</small></td>
+                      <td className="num">{v(r.switchback.diff)} <small>{ci(r.switchback)}</small></td>
+                      <td className="num">{v(r.naive.diff)} <small>{ci(r.naive)}</small></td>
                       <td className="num">{v(r.naiveBias)}</td>
                       <td className="num">{v(r.switchbackBias)}</td>
                     </tr>
