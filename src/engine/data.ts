@@ -244,9 +244,40 @@ export function parseTime(v: unknown): number {
     return n > 1e11 ? n / 60000 : n > 1e8 ? n / 60 : n
   }
   const clock = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s)
-  if (clock) return Number(clock[1]) * 60 + Number(clock[2]) + Number(clock[3] ?? 0) / 60
-  const ms = Date.parse(s)
-  return Number.isNaN(ms) ? NaN : ms / 60000
+  if (clock) return Number(clock[1]) < 24 && validMinSec(clock[2], clock[3]) ? Number(clock[1]) * 60 + Number(clock[2]) + Number(clock[3] ?? 0) / 60 : NaN
+  return parseIso(s)
+}
+
+/** Year-first timestamps only: Date.parse guesses at anything else ("4,5" is April 2001). Without a zone they are local. */
+function parseIso(s: string): number {
+  const m = /^(\d{4})([-/.])(\d{1,2})\2(\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?\s?(Z|UTC|[+-]\d{2}(?::?\d{2})?)?)?$/i.exec(s)
+  if (!m) return NaN
+  const [y, mo, d, h, min, sec] = [m[1], m[3], m[4], m[5] ?? 0, m[6] ?? 0, m[7] ?? 0].map(Number)
+  const zone = /^([+-])(\d{2}):?(\d{2})?$/.exec(m[8] ?? '')
+  if (!validDay(y, mo, d) || h > 23 || !validMinSec(m[6], m[7]) || (zone && (Number(zone[2]) > 14 || Number(zone[3] ?? 0) > 59))) return NaN
+  if (m[5] !== undefined && !m[8]) return new Date(y, mo - 1, d, h, min, Math.floor(sec), Math.round((sec % 1) * 1000)).getTime() / 60000
+  const offset = zone ? (zone[1] === '-' ? -1 : 1) * (Number(zone[2]) * 60 + Number(zone[3] ?? 0)) : 0
+  return Date.UTC(y, mo - 1, d, h, min) / 60000 + sec / 60 - offset
+}
+
+const validMinSec = (min?: string, sec?: string) => Number(min ?? 0) < 60 && Number(sec ?? 0) < 60
+/** Rejects 31 February and month 13, which Date would roll over. */
+function validDay(y: number, m: number, d: number): boolean {
+  const t = new Date(Date.UTC(y, m - 1, d))
+  return t.getUTCMonth() === m - 1 && t.getUTCDate() === d
+}
+
+/**
+ * Minutes count from an unknown start, clock times repeat every day, and dates are absolute. The three
+ * cannot be put on one axis, so a list keeps one kind and couriers must use the same kind as orders.
+ */
+type TimeKind = 'minutes' | 'clock' | 'date'
+const KIND_LABEL: Record<TimeKind, string> = { minutes: 'plain minutes (like 90)', clock: 'clock times (like 18:05)', date: 'dated times (like 2024-03-02T18:05 or epoch seconds)' }
+
+function timeKind(v: unknown): TimeKind {
+  const s = String(v ?? '').trim()
+  if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s) > 1e8 ? 'date' : 'minutes'
+  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s) ? 'clock' : 'date'
 }
 
 /**
@@ -268,7 +299,7 @@ function parseDate(v: unknown): number {
   const ymd = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(s)
   const dmy = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(s)
   const [y, m, d] = ymd ? [ymd[1], ymd[2], ymd[3]] : dmy ? [dmy[3], dmy[2], dmy[1]] : []
-  if (!y || Number(m) > 12 || Number(d) > 31) return NaN
+  if (!y || !validDay(Number(y), Number(m), Number(d))) return NaN
   return Date.UTC(Number(y), Number(m) - 1, Number(d)) / 60000
 }
 
@@ -514,7 +545,9 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
   if (!meituan) orderRecs.forEach((rec, i) => {
     const line = i + 2
     let createdAt = parseTime(pickField(rec, F.created))
-    const day = parseDate(pickField(rec, F.date))
+    const dateCell = pickField(rec, F.date)
+    // The date may come as a timestamp at midnight, as spreadsheets and pandas export it.
+    const day = parseDate(String(dateCell ?? '').trim().replace(/[T ]00:00(:00(\.0+)?)?Z?$/i, ''))
     // A separate date column turns clock times into absolute ones, so multi-day files sort correctly.
     let kind = timeKind(pickField(rec, F.created))
     if (!Number.isNaN(day) && createdAt >= 0 && createdAt < 1440) { createdAt += day; kind = 'date' }
@@ -534,6 +567,8 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
     const payout = money(payCell)
     const missing = [
       !Number.isFinite(createdAt) && 'created time',
+      // Without a readable date, clock times from different days would fold into one.
+      !isBlank(dateCell) && Number.isNaN(day) && kind !== 'date' && 'date (use 2024-03-19 or day-first 19-03-2024)',
       (!Number.isFinite(sLat) || !Number.isFinite(sLng)) && 'store lat/lng',
       (!Number.isFinite(cLat) || !Number.isFinite(cLng)) && 'customer lat/lng',
       (!Number.isFinite(prep) || prep < 0 || prep > MAX_PREP_MIN) && 'prep time',

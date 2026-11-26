@@ -60,9 +60,15 @@ test('#5 a payout that cannot be read whole is reported, not repriced', async ({
   await expectRefused(page, /Order line 2: bad payout/)
 })
 
-test.fail('#6 a decimal comma is not read as a date in 2001', async ({ page }) => {
+test('#6 a decimal comma is not read as a date in 2001', async ({ page }) => {
   await load(page, orders('a,"4,5",10,20,10.01,20,10'), ONE_COURIER)
-  await expect(page.getByRole('alert')).toContainText('Order line 2: bad created time', { timeout: 5_000 })
+  await expectRefused(page, /Order line 2: bad created time/)
+})
+
+test('#6 dates that cannot be read are reported, not folded into one day', async ({ page }) => {
+  const rows = ['3/19/2022', '3/20/2022', '3/21/2022'].map((d, i) => `${d},18:0${i},10,20,10.01,20,10`)
+  await load(page, ['order_date,created,store_lat,store_lng,customer_lat,customer_lng,prep', ...rows].join('\n'))
+  await expectRefused(page, /Order line 2: bad date.*Order line 3: bad date.*Order line 4: bad date/)
 })
 
 test.fail('#7 an open quote is an error, not a shorter file', async ({ page }) => {
