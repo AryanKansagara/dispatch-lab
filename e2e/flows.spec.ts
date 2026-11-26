@@ -1,0 +1,157 @@
+import { test, expect, open, metric } from './fixtures.ts'
+
+test('landing: headline, live demos, and the way into the lab and the docs', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Every stack is a trade-off.')
+  await expect(page.locator('canvas').first()).toBeVisible()
+  await page.getByRole('link', { name: 'How it works and data sources' }).click()
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('How Dispatch Lab works')
+  await page.getByRole('link', { name: 'Open the lab' }).click()
+  await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible()
+})
+
+test('docs: a section link lands on its section', async ({ page }) => {
+  await page.goto('/docs#formats')
+  await expect(page.getByRole('heading', { name: 'Import formats' })).toBeInViewport()
+})
+
+test('replay: a bundled real city runs both strategies and says what is real', async ({ page }) => {
+  await page.goto('/app')
+  await expect(page.getByText('Real streets, synthetic orders')).toBeVisible()
+  await expect(page.locator('.verdict')).toContainText('courier minutes per delivery')
+  await expect(page.getByLabel(/Animated city map/)).toHaveCount(2)
+  await expect(metric(page, 'Delivery time, p50 (min)', 1)).toHaveText(/^\d+\.\d$/)
+  await page.locator('.city-select select').selectOption('waterloo')
+  await expect(page).toHaveURL(/city=waterloo/)
+  await expect(page.locator('.verdict')).toBeVisible()
+})
+
+test('replay: the same seed repeats its numbers, another seed changes them', async ({ page }) => {
+  await open(page, 'seed=5&cmp=0')
+  await expect(page.getByText('Synthetic city, not DoorDash data')).toBeVisible()
+  const p50 = metric(page, 'Delivery time, p50 (min)')
+  const cost = metric(page, 'Platform cost per delivery')
+  await expect(p50).toHaveText(/\d/)
+  const first = [await p50.textContent(), await cost.textContent()]
+  await page.locator('.seed input').fill('6')
+  await expect(cost).not.toHaveText(first[1]!)
+  await page.locator('.seed input').fill('5')
+  await expect(cost).toHaveText(first[1]!)
+  await expect(p50).toHaveText(first[0]!)
+})
+
+test('replay: strategies, comparison and world settings drive the table', async ({ page }) => {
+  await open(page, 'seed=3&a=greedy.50.50.0&b=batch.50.50.0')
+  // Greedy never stacks; batching at the same store does.
+  await expect(metric(page, 'Orders in stacks', 0)).toHaveText('0%')
+  await expect(metric(page, 'Orders in stacks', 1)).not.toHaveText('0%')
+  await expect(metric(page, 'Worst-paid order in a stack', 0)).toHaveText('No stacks')
+  await page.getByLabel('Strategy B').selectOption('hungarian')
+  await expect(metric(page, 'Orders in stacks', 1)).toHaveText('0%')
+  await page.getByLabel('Compare side by side').uncheck()
+  await expect(page.getByRole('columnheader', { name: 'B against A' })).toHaveCount(0)
+  await page.getByText('World settings').click()
+  const before = Number(await metric(page, 'Delivery time, p50 (min)').textContent())
+  await page.getByLabel('Courier speed').fill('50')
+  await expect.poll(async () => Number(await metric(page, 'Delivery time, p50 (min)').textContent())).toBeLessThan(before)
+  await expect(page).toHaveURL(/speed=50/)
+})
+
+test('replay: scrubbing, play and pause, and the courier drill-down', async ({ page }) => {
+  await open(page, 'seed=3&cmp=0')
+  const line = page.getByLabel('Timeline')
+  await expect(line).toBeEnabled()
+  await expect(metric(page, 'Delivery time, p50 (min)')).toHaveText(/\d/)
+  await line.fill('90')
+  // Lunch starts at 11:00, so minute 90 is 12:30.
+  await expect(page.locator('.transport-time')).toHaveText('12:30 PM')
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible()
+  await page.getByRole('button', { name: 'Pause' }).click()
+  await page.getByLabel('Choose a courier').selectOption('a:0')
+  await expect(page.locator('.courier-card')).toContainText('Earned, delivered')
+  await expect(page.locator('.courier-card h3')).toContainText('C1')
+  await page.getByRole('button', { name: 'Close courier' }).click()
+  await expect(page.locator('.courier-card')).toContainText('Click any courier')
+})
+
+test('experiment: runs by itself, shows every outcome, and marks stale settings', async ({ page }) => {
+  await open(page, 'seed=2&tab=experiment&a=greedy.50.50.0&b=batch.50.50.0&days=2&rg=2&w=30')
+  await expect(page.getByText('Units analysed')).toBeVisible({ timeout: 60_000 })
+  await expect(page.locator('table.metrics tbody tr')).toHaveCount(7)
+  await expect(page.locator('.stat', { hasText: 'Units analysed' }).locator('b')).toHaveText(/^\d\d$/)
+  await page.getByRole('button', { name: 'Courier pay per order' }).click()
+  await expect(page.locator('.exp-hero')).toContainText('courier pay per order')
+  await page.getByLabel('Switchback window').selectOption('60')
+  await expect(page.getByRole('button', { name: 'Run with new settings' })).toBeVisible()
+  await page.getByRole('button', { name: 'Run with new settings' }).click()
+  await expect(page.getByRole('button', { name: 'Run again' })).toBeEnabled({ timeout: 60_000 })
+})
+
+test('experiment: A against the same A has a true effect of exactly zero', async ({ page }) => {
+  await open(page, 'seed=2&tab=experiment&a=greedy.50.50.0&b=greedy.50.50.0&days=2&rg=2&w=30')
+  await expect(page.locator('table.metrics tbody tr')).toHaveCount(7, { timeout: 60_000 })
+  for (const cell of await page.locator('table.metrics tbody tr td:nth-child(2)').allTextContents()) expect(cell).toBe('0.00')
+})
+
+test('sweep: eleven settings, a frontier, and a point applied to strategy A', async ({ page }) => {
+  await open(page, 'seed=2&tab=sweep')
+  const point = page.getByRole('button', { name: /^Apply batching weight 100\./ })
+  await expect(point).toBeVisible({ timeout: 80_000 })
+  await page.getByText('View as a table').click()
+  const rows = page.locator('.table-details tbody tr')
+  await expect(rows).toHaveCount(11)
+  expect(await rows.locator('th').allTextContents()).toEqual(['0', '10', '20', '30', '40', '50', '60', '70', '80', '90', '100'])
+  expect((await rows.locator('td:last-child').allTextContents()).filter(t => t === 'Yes').length).toBeGreaterThan(0)
+  await point.press('Enter')
+  await expect(page.locator('.applied')).toContainText('Applied to A')
+  await expect(page).toHaveURL(/a=optimizer\.100\./)
+  await page.getByRole('button', { name: 'Watch it replay' }).click()
+  await expect(page.locator('.verdict')).toContainText('per active hour')
+})
+
+test('settings survive a reload, and a share link reproduces the screen', async ({ page, context }) => {
+  await open(page, 'seed=41&cmp=0')
+  await page.getByRole('button', { name: 'Rain' }).click()
+  await expect(page).toHaveURL(/s=rain/)
+  await page.goto('/')
+  await page.goto('/app')
+  await expect(page.locator('.seed input')).toHaveValue('41')
+  await expect(page.getByRole('button', { name: 'Rain' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByLabel('Compare side by side')).not.toBeChecked()
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await page.getByRole('button', { name: 'Share' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Link copied' })).toBeVisible()
+  const link = await page.evaluate(() => navigator.clipboard.readText())
+  expect(link).toContain('seed=41')
+  const cost = await metric(page, 'Platform cost per delivery').textContent()
+  await page.evaluate(() => localStorage.clear())
+  await page.goto('/')
+  await page.goto(link)
+  await expect(metric(page, 'Platform cost per delivery')).toHaveText(cost!)
+})
+
+test('a hostile share link falls back to safe values', async ({ page }) => {
+  await page.goto('/app#s=__proto__&city=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E&seed=1e99&a=<b>.x.y.z&stack=999&speed=-4&tab=nope&cmp=2')
+  await expect(page.locator('.verdict')).toBeVisible()
+  await expect(page.locator('.city-select select')).toHaveValue('toronto')
+  await expect(page.locator('.seed input')).toHaveValue('999999')
+  await expect(page).toHaveURL(/stack=4&speed=5&/)
+})
+
+test('theme: the choice is applied and remembered', async ({ page }) => {
+  await open(page, 'cmp=0')
+  await page.getByRole('button', { name: 'Switch to dark theme' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme-mode', 'dark')
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-theme-mode', 'dark')
+  await page.getByRole('button', { name: 'Switch to light theme' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme-mode', 'light')
+})
+
+test('page width: no sideways scroll on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 })
+  await open(page)
+  await expect(page.locator('.verdict')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0)
+})

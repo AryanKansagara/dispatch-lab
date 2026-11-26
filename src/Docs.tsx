@@ -31,7 +31,7 @@ export default function Docs() {
         <h2 id="formats">Import formats</h2>
         <h3>Generic CSV or JSON</h3>
         <p>One row per order with a created time, store and customer coordinates and prep minutes. Column names are matched loosely, so <code>store_lat</code>, <code>pickup_latitude</code> and <code>Restaurant_latitude</code> all work. Times can be minutes from the start, <code>HH:MM</code>, ISO timestamps or Unix epoch seconds or milliseconds. A separate date column (<code>2024-03-19</code> or day-first <code>19-03-2022</code>) is combined with clock times. Without a prep column, the time from order to pickup is used instead. An optional <code>payout</code> replaces the pay model, and a recorded delivery time (<code>delivery_min</code>, <code>Time_taken(min)</code>) is shown beside the simulated one.</p>
-        <p>Couriers are optional: shift start, shift end and a start position. Without them, an assumed fleet of one courier per 6.5 orders is added and labelled.</p>
+        <p>Couriers are optional: shift start, shift end and a start position. Use the same kind of time as the orders; a clock shift such as 18:00 to 02:00 ends the next day. Without them, an assumed fleet of one courier per 6.5 orders is added and labelled.</p>
         <p>Cleaning rules: rows with a store or customer at 0,0, or a store over 50 km from its customer, are skipped as broken coordinates. A file covering several cities keeps the busiest one, and a file covering several days keeps the busiest day. Every skip is reported. Limits are 5,000 orders and 800 couriers per run.</p>
 
         <h3>Meituan waybills</h3>

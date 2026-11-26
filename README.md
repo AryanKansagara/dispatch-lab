@@ -41,6 +41,7 @@ npm install
 npm run dev
 npm test
 npm run build
+npm run test:e2e   # Playwright on the production build; first run: npx playwright install chromium (E2E_PORT picks the port)
 ```
 
 Refresh the bundled cities from OpenStreetMap with `node scripts/bake-cities.ts` (live from Overpass), or from local extracts converted to Overpass-style JSON with `node scripts/bake-cities.ts --from <dir>`.

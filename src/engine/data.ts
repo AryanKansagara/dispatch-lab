@@ -181,28 +181,39 @@ export function resampleDay(base: Dataset, seed: number): Dataset {
   return { ...base, orders }
 }
 
-/** A small RFC-4180 reader: quoted fields, embedded commas, doubled quotes and CRLF. */
+/**
+ * A small RFC-4180 reader: quoted fields, embedded commas, doubled quotes and CRLF. A quote only opens
+ * a field at its start, so an inch mark is text. Throws where quoting breaks, because every row after
+ * that point could be swallowed into one cell.
+ */
 export function parseCsv(text: string): string[][] {
   const rows: string[][] = []
   let row: string[] = []
   let cell = ''
   let quoted = false
+  let closed = false
+  let line = 1
+  let openedAt = 0
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]
+    if (ch === '\n' || (ch === '\r' && text[i + 1] !== '\n')) line++
     if (quoted) {
       if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++ }
-      else if (ch === '"') quoted = false
+      else if (ch === '"') { quoted = false; closed = true }
       else cell += ch
-    } else if (ch === '"') quoted = true
-    else if (ch === ',') { row.push(cell); cell = '' }
+    } else if (ch === '"' && !closed && cell.trim() === '') { quoted = true; openedAt = line; cell = '' }
+    else if (ch === ',') { row.push(cell); cell = ''; closed = false }
     else if (ch === '\n' || ch === '\r') {
       if (ch === '\r' && text[i + 1] === '\n') i++
       row.push(cell)
       if (row.some(c => c.trim() !== '')) rows.push(row)
       row = []
       cell = ''
-    } else cell += ch
+      closed = false
+    } else if (closed && ch !== ' ' && ch !== '\t') throw new Error(`the quote opened on line ${openedAt} closes in the middle of a cell on line ${line}. Fix the quotes and load again.`)
+    else cell += ch
   }
+  if (quoted) throw new Error(`a quote opened on line ${openedAt} is never closed, so the rows after it cannot be read. The file may be cut off.`)
   row.push(cell)
   if (row.some(c => c.trim() !== '')) rows.push(row)
   return rows
@@ -210,18 +221,28 @@ export function parseCsv(text: string): string[][] {
 
 type Rec = Record<string, unknown>
 
-function recordsFrom(text: string, jsonKey: string): Rec[] {
+/** A row that cannot be matched to the columns, kept in place so it is reported by line. */
+class RowProblem {
+  text: string
+  constructor(text: string) { this.text = text }
+}
+
+function recordsFrom(text: string, jsonKey: string): (Rec | RowProblem)[] {
   const t = text.trim()
   if (!t) return []
   if (t[0] === '{' || t[0] === '[') {
     const parsed: unknown = JSON.parse(t)
     const list = Array.isArray(parsed) ? parsed : (parsed as Rec)[jsonKey]
     if (!Array.isArray(list)) throw new Error(`JSON must be an array or have a "${jsonKey}" array.`)
-    return list as Rec[]
+    return list.map(x => x && typeof x === 'object' && !Array.isArray(x) ? (x as Rec) : new RowProblem('not an object with named fields'))
   }
   const rows = parseCsv(t)
   const head = rows[0].map(h => h.trim())
-  return rows.slice(1).map(cells => Object.fromEntries(head.map((h, i) => [h, cells[i]?.trim() ?? ''])))
+  return rows.slice(1).map(cells => {
+    // A surplus value means the cells are shifted, for example by an unquoted decimal comma.
+    if (cells.slice(head.length).some(c => c.trim())) return new RowProblem(`${cells.length} values for ${head.length} columns`)
+    return Object.fromEntries(head.map((h, i) => [h, cells[i]?.trim() ?? '']))
+  })
 }
 
 const norm = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -244,9 +265,40 @@ export function parseTime(v: unknown): number {
     return n > 1e11 ? n / 60000 : n > 1e8 ? n / 60 : n
   }
   const clock = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s)
-  if (clock) return Number(clock[1]) * 60 + Number(clock[2]) + Number(clock[3] ?? 0) / 60
-  const ms = Date.parse(s)
-  return Number.isNaN(ms) ? NaN : ms / 60000
+  if (clock) return Number(clock[1]) < 24 && validMinSec(clock[2], clock[3]) ? Number(clock[1]) * 60 + Number(clock[2]) + Number(clock[3] ?? 0) / 60 : NaN
+  return parseIso(s)
+}
+
+/** Year-first timestamps only: Date.parse guesses at anything else ("4,5" is April 2001). Without a zone they are local. */
+function parseIso(s: string): number {
+  const m = /^(\d{4})([-/.])(\d{1,2})\2(\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?\s?(Z|UTC|[+-]\d{2}(?::?\d{2})?)?)?$/i.exec(s)
+  if (!m) return NaN
+  const [y, mo, d, h, min, sec] = [m[1], m[3], m[4], m[5] ?? 0, m[6] ?? 0, m[7] ?? 0].map(Number)
+  const zone = /^([+-])(\d{2}):?(\d{2})?$/.exec(m[8] ?? '')
+  if (!validDay(y, mo, d) || h > 23 || !validMinSec(m[6], m[7]) || (zone && (Number(zone[2]) > 14 || Number(zone[3] ?? 0) > 59))) return NaN
+  if (m[5] !== undefined && !m[8]) return new Date(y, mo - 1, d, h, min, Math.floor(sec), Math.round((sec % 1) * 1000)).getTime() / 60000
+  const offset = zone ? (zone[1] === '-' ? -1 : 1) * (Number(zone[2]) * 60 + Number(zone[3] ?? 0)) : 0
+  return Date.UTC(y, mo - 1, d, h, min) / 60000 + sec / 60 - offset
+}
+
+const validMinSec = (min?: string, sec?: string) => Number(min ?? 0) < 60 && Number(sec ?? 0) < 60
+/** Rejects 31 February and month 13, which Date would roll over. */
+function validDay(y: number, m: number, d: number): boolean {
+  const t = new Date(Date.UTC(y, m - 1, d))
+  return t.getUTCMonth() === m - 1 && t.getUTCDate() === d
+}
+
+/**
+ * Minutes count from an unknown start, clock times repeat every day, and dates are absolute. The three
+ * cannot be put on one axis, so a list keeps one kind and couriers must use the same kind as orders.
+ */
+type TimeKind = 'minutes' | 'clock' | 'date'
+const KIND_LABEL: Record<TimeKind, string> = { minutes: 'plain minutes (like 90)', clock: 'clock times (like 18:05)', date: 'dated times (like 2024-03-02T18:05 or epoch seconds)' }
+
+function timeKind(v: unknown): TimeKind {
+  const s = String(v ?? '').trim()
+  if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s) > 1e8 ? 'date' : 'minutes'
+  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s) ? 'clock' : 'date'
 }
 
 /** A calendar date as minutes since the Unix epoch (UTC): YYYY-MM-DD, or day first as DD-MM-YYYY or DD/MM/YYYY. */
@@ -255,18 +307,48 @@ function parseDate(v: unknown): number {
   const ymd = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(s)
   const dmy = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(s)
   const [y, m, d] = ymd ? [ymd[1], ymd[2], ymd[3]] : dmy ? [dmy[3], dmy[2], dmy[1]] : []
-  if (!y || Number(m) > 12 || Number(d) > 31) return NaN
+  if (!y || !validDay(Number(y), Number(m), Number(d))) return NaN
   return Date.UTC(Number(y), Number(m) - 1, Number(d)) / 60000
 }
 
-/** Plain numbers, plus labelled ones such as "(min) 24"; "NaN", blank and missing are NaN. */
+/** An empty cell, or the usual spellings of one. */
+const isBlank = (v: unknown) => /^(nan|null)?$/i.test(String(v ?? '').trim())
+
+/**
+ * A number must fill its whole cell. Anything left over ("10-15", "4,5", "40°42'46\"") is NaN, because
+ * reading part of it gives a wrong value that looks right. Thousands commas count only before a decimal
+ * point: "1,250.50" is plain, "1,250" could be a decimal comma.
+ */
+const NUMBER = String.raw`[-+]?(?:\d{1,3}(?:,\d{3})+\.\d+|\d+(?:\.\d+)?|\.\d+)(?:e[-+]?\d+)?`
+const whole = new RegExp(`^${NUMBER}$`, 'i')
 const num = (v: unknown) => {
   if (typeof v === 'number') return v
   const s = String(v ?? '').trim()
-  if (s === '') return NaN
-  if (/^-?\d+(\.\d+)?(e-?\d+)?$/i.test(s)) return Number(s)
-  const m = /-?\d+(\.\d+)?/.exec(s)
-  return m && /[a-z(]/i.test(s) && !/nan/i.test(s) ? Number(m[0]) : NaN
+  return whole.test(s) ? Number(s.replaceAll(',', '')) : NaN
+}
+
+/** "12", "12 min", "(min) 12" or "1h 20m". */
+function minutesOf(v: unknown): number {
+  if (typeof v === 'number') return v
+  const s = String(v ?? '').trim().toLowerCase().replace(/^\(min\)\s*/, '')
+  const hm = /^(\d+)\s*(?:h|hr|hrs|hours?)(?:\s*(\d{1,2})\s*(?:m|mins?|minutes?)?)?$/.exec(s)
+  if (hm) return Number(hm[1]) * 60 + Number(hm[2] ?? 0)
+  return num(s.replace(/\s*(?:m|mins?|minutes?)$/, ''))
+}
+
+/** "8.25", "$8.25", "USD 8.25" or "8.25 CAD". */
+const CURRENCY = String.raw`(?:[A-Z]{0,3}[$€£¥₹]|[A-Z]{3}|Rs\.?)`
+const money = (v: unknown) => typeof v === 'number' ? v
+  : num(String(v ?? '').trim().replace(new RegExp(`^(-?)${CURRENCY}\\s*`), '$1').replace(new RegExp(`\\s*${CURRENCY}$`), ''))
+
+/** Decimal degrees, with an optional sign or hemisphere: "-74.006", "74.006° W". */
+function degrees(v: unknown, hemispheres: 'NS' | 'EW'): number {
+  if (typeof v === 'number') return v
+  const m = new RegExp(`^([+-]?[\\d.]+)\\s*°?\\s*([${hemispheres}])?$`, 'i').exec(String(v ?? '').trim())
+  if (!m) return num(v)
+  const n = num(m[1])
+  if (!m[2]) return n
+  return /^[+-]/.test(m[1]) ? NaN : m[2].toUpperCase() === hemispheres[0] ? n : -n
 }
 const validPos = (lat: number, lng: number) => Math.abs(lat) <= 90 && Math.abs(lng) <= 180
 
@@ -292,6 +374,20 @@ export interface ParseResult { dataset: Dataset | null; errors: string[]; warnin
 export const MAX_ORDERS = 5000
 const MAX_COURIERS = 800
 const MAX_ROWS = 200_000
+/** Food that takes over a day to prepare is a unit mix-up. */
+const MAX_PREP_MIN = 1440
+/** Longest shift that can be real rather than a unit mix-up; it also bounds the length of a run. */
+const MAX_SHIFT_MIN = 7 * 1440
+
+/** Whether a saved dataset has the shape and length the simulator can run. */
+export function isRunnable(d: unknown): d is Dataset {
+  const x = d as Dataset | null
+  const pos = (p?: LatLng) => Number.isFinite(p?.lat) && Number.isFinite(p?.lng)
+  const inRun = (t: number) => Number.isFinite(t) && t >= 0 && t <= MAX_SHIFT_MIN + 4 * 1440
+  return !!x && typeof x.name === 'string' && Array.isArray(x.orders) && Array.isArray(x.couriers) && x.orders.length > 0 &&
+    x.orders.every(o => !!o && inRun(o.createdAt) && Number.isFinite(o.prepMin) && pos(o.store) && pos(o.customer)) &&
+    x.couriers.every(c => !!c && inRun(c.shiftStart) && inRun(c.shiftEnd) && pos(c.start))
+}
 
 /**
  * Meituan's public waybill export from the 2025 INFORMS TSL challenge (all_waybill_info_meituan).
@@ -372,6 +468,7 @@ function fromMeituan(recs: Rec[], warnings: string[]): { orders: Order[]; courie
   const pending: Order[] = []
   const preps: number[] = []
   let prebook = 0
+  let unusable = 0
   for (const [id, r] of byOrder) {
     if (s(r, 'is_prebook') === '1') { prebook++; continue }
     const placed = n(r, 'platform_order_time')
@@ -384,7 +481,7 @@ function fromMeituan(recs: Rec[], warnings: string[]): { orders: Order[]; courie
       customer: { lat: n(r, 'recipient_lat') / 1e6, lng: n(r, 'recipient_lng') / 1e6 },
       prepMin: prep,
     }
-    if (!(placed > 0) || !(o.store.lat || o.store.lng) || !(o.customer.lat || o.customer.lng)) continue
+    if (!(placed > 0) || !(o.store.lat || o.store.lng) || !(o.customer.lat || o.customer.lng)) { unusable++; continue }
     if (prep > 0 && prep <= 120) preps.push(prep)
     else pending.push(o)
     orders.push(o)
@@ -412,6 +509,7 @@ function fromMeituan(recs: Rec[], warnings: string[]): { orders: Order[]; courie
   }
   warnings.push(`Read ${byOrder.size} orders from ${recs.length} dispatch offers${dupes ? ` (${dupes} repeat offers merged)` : ''} and ${couriers.length} couriers who accepted one.`)
   if (prebook) warnings.push(`Pre-booked orders skipped, as they are scheduled rather than on-demand: ${prebook}.`)
+  if (unusable) warnings.push(`Orders skipped for having no readable order time, store or customer: ${unusable}.`)
   if (pending.length) warnings.push(`Orders with no usable kitchen estimate, given the area median of ${median.toFixed(1)} min: ${pending.length}.`)
   warnings.push('Courier shifts are inferred from their first accepted offer to their last drop-off in this window, so they are shorter than real shifts.')
   return { orders, couriers, observed }
@@ -427,8 +525,8 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
     ordersText = cut.text
     warnings.push(cut.note)
   }
-  let orderRecs: Rec[] = []
-  let courierRecs: Rec[] = []
+  let orderRecs: (Rec | RowProblem)[] = []
+  let courierRecs: (Rec | RowProblem)[] = []
   try { orderRecs = recordsFrom(ordersText, 'orders') } catch (e) { errors.push(`Orders: ${(e as Error).message}`) }
   if (errors.length) return { dataset: null, errors, warnings }
   try {
@@ -445,35 +543,49 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
   let parsedOrders: Order[] = []
   let parsedCouriers: Courier[] = []
   let observedOf = new Map<Order, number>()
+  const rows: { o: Order; line: number; kind: TimeKind }[] = []
+  let orderKind: TimeKind = 'date'
+  let unreadObserved = 0
   if (meituan) {
-    const m = fromMeituan(orderRecs, warnings)
+    const usable = orderRecs.filter((r): r is Rec => !(r instanceof RowProblem))
+    if (usable.length < orderRecs.length) warnings.push(`Rows skipped for having more values than columns: ${orderRecs.length - usable.length}.`)
+    const m = fromMeituan(usable, warnings)
     parsedOrders = m.orders
     parsedCouriers = courierRecs.length ? [] : m.couriers
     observedOf = m.observed
   }
   if (!meituan) orderRecs.forEach((rec, i) => {
     const line = i + 2
+    if (rec instanceof RowProblem) { bad.push(`Order line ${line}: ${rec.text}`); return }
     let createdAt = parseTime(pickField(rec, F.created))
-    const day = parseDate(pickField(rec, F.date))
+    const dateCell = pickField(rec, F.date)
+    // The date may come as a timestamp at midnight, as spreadsheets and pandas export it.
+    const day = parseDate(String(dateCell ?? '').trim().replace(/[T ]00:00(:00(\.0+)?)?Z?$/i, ''))
     // A separate date column turns clock times into absolute ones, so multi-day files sort correctly.
-    if (!Number.isNaN(day) && createdAt >= 0 && createdAt < 1440) createdAt += day
-    const sLat = num(pickField(rec, F.storeLat))
-    const sLng = num(pickField(rec, F.storeLng))
-    const cLat = num(pickField(rec, F.custLat))
-    const cLng = num(pickField(rec, F.custLng))
-    let prep = num(pickField(rec, F.prep))
-    if (!Number.isFinite(prep)) {
-      // No prep column: the wait from order to pickup is the closest recorded stand-in.
+    let kind = timeKind(pickField(rec, F.created))
+    if (!Number.isNaN(day) && createdAt >= 0 && createdAt < 1440) { createdAt += day; kind = 'date' }
+    const sLat = degrees(pickField(rec, F.storeLat), 'NS')
+    const sLng = degrees(pickField(rec, F.storeLng), 'EW')
+    const cLat = degrees(pickField(rec, F.custLat), 'NS')
+    const cLng = degrees(pickField(rec, F.custLng), 'EW')
+    const prepCell = pickField(rec, F.prep)
+    let prep = minutesOf(prepCell)
+    if (isBlank(prepCell)) {
+      // No prep time: the wait from order to pickup is the closest recorded stand-in.
       const picked = parseTime(pickField(rec, F.picked))
       const created = parseTime(pickField(rec, F.created))
       if (Number.isFinite(picked) && Number.isFinite(created)) prep = picked - created + (picked < created && created < 1440 ? 1440 : 0)
     }
-    const payout = num(pickField(rec, F.payout))
+    const payCell = pickField(rec, F.payout)
+    const payout = money(payCell)
     const missing = [
-      Number.isNaN(createdAt) && 'created time',
+      !Number.isFinite(createdAt) && 'created time',
+      // Without a readable date, clock times from different days would fold into one.
+      !isBlank(dateCell) && Number.isNaN(day) && kind !== 'date' && 'date (use 2024-03-19 or day-first 19-03-2024)',
       (!Number.isFinite(sLat) || !Number.isFinite(sLng)) && 'store lat/lng',
       (!Number.isFinite(cLat) || !Number.isFinite(cLng)) && 'customer lat/lng',
-      (!Number.isFinite(prep) || prep < 0) && 'prep time',
+      (!Number.isFinite(prep) || prep < 0 || prep > MAX_PREP_MIN) && 'prep time',
+      !isBlank(payCell) && !(Number.isFinite(payout) && payout >= 0) && 'payout',
     ].filter(Boolean)
     if (missing.length) { bad.push(`Order line ${line}: bad ${missing.join(', ')}`); return }
     if (!validPos(sLat, sLng) || !validPos(cLat, cLng)) { bad.push(`Order line ${line}: coordinates out of range`); return }
@@ -483,22 +595,50 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
       store: { lat: sLat, lng: sLng },
       customer: { lat: cLat, lng: cLng },
       prepMin: prep,
-      ...(Number.isFinite(payout) && payout >= 0 ? { payout } : {}),
+      ...(isBlank(payCell) ? {} : { payout }),
     }
-    parsedOrders.push(o)
-    const seen = num(pickField(rec, F.observed))
-    if (seen > 0) observedOf.set(o, seen)
+    rows.push({ o, line, kind })
+    const seenCell = pickField(rec, F.observed)
+    const seen = minutesOf(seenCell)
+    if (seen > 0 && Number.isFinite(seen)) observedOf.set(o, seen)
+    else if (!isBlank(seenCell)) unreadObserved++
   })
+  if (unreadObserved) warnings.push(`Recorded delivery times that could not be read and were left out: ${unreadObserved}.`)
+  if (!meituan && rows.length) {
+    const count = (k: TimeKind) => rows.filter(r => r.kind === k).length
+    const [first, second] = (Object.keys(KIND_LABEL) as TimeKind[]).sort((a, b) => count(b) - count(a))
+    if (count(first) === count(second)) {
+      return { dataset: null, errors: [...bad.slice(0, 8), `Created times are half ${KIND_LABEL[first]} and half ${KIND_LABEL[second]}, which cannot be put on one timeline. Use one kind.`], warnings }
+    }
+    orderKind = first
+    for (const r of rows) {
+      if (r.kind === first) parsedOrders.push(r.o)
+      else bad.push(`Order line ${r.line}: created time is not in ${KIND_LABEL[first]} like the other rows`)
+    }
+  }
+  const courierKinds = new Map<TimeKind, number>()
   courierRecs.forEach((rec, i) => {
     const line = i + 2
-    const shiftStart = parseTime(pickField(rec, F.shiftStart))
-    const shiftEnd = parseTime(pickField(rec, F.shiftEnd))
-    const lat = num(pickField(rec, F.startLat))
-    const lng = num(pickField(rec, F.startLng))
-    if (Number.isNaN(shiftStart) || Number.isNaN(shiftEnd) || !(shiftEnd > shiftStart) || !validPos(lat, lng) || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    if (rec instanceof RowProblem) { bad.push(`Courier line ${line}: ${rec.text}`); return }
+    const startCell = pickField(rec, F.shiftStart)
+    const endCell = pickField(rec, F.shiftEnd)
+    const shiftStart = parseTime(startCell)
+    let shiftEnd = parseTime(endCell)
+    const kind = timeKind(startCell)
+    if (Number.isFinite(shiftStart) && Number.isFinite(shiftEnd)) {
+      if (kind !== timeKind(endCell)) { bad.push(`Courier line ${line}: shift start and shift end are different kinds of time`); return }
+      // 18:00 to 02:00 ends the next day.
+      if (kind === 'clock' && shiftEnd < shiftStart) shiftEnd += 1440
+      if (shiftEnd - shiftStart > MAX_SHIFT_MIN) { bad.push(`Courier line ${line}: the shift is longer than 7 days`); return }
+    }
+    const lat = degrees(pickField(rec, F.startLat), 'NS')
+    const lng = degrees(pickField(rec, F.startLng), 'EW')
+    if (!Number.isFinite(shiftStart) || !Number.isFinite(shiftEnd) || !(shiftEnd > shiftStart) || !validPos(lat, lng) || !Number.isFinite(lat) || !Number.isFinite(lng)) {
       bad.push(`Courier line ${line}: needs shift start before shift end, and a start position`)
       return
     }
+    courierKinds.set(kind, (courierKinds.get(kind) ?? 0) + 1)
+    if (kind !== orderKind) { bad.push(`Courier line ${line}: shift is not in ${KIND_LABEL[orderKind]} like the orders`); return }
     parsedCouriers.push({ id: String(pickField(rec, ['id', 'courierid']) ?? `C${i + 1}`), shiftStart, shiftEnd, start: { lat, lng } })
   })
   if (bad.length) errors.push(...bad.slice(0, 8), ...(bad.length > 8 ? [`and ${bad.length - 8} more bad rows`] : []))
@@ -509,6 +649,23 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
   parsedOrders = parsedOrders.filter(o => !(o.store.lat === 0 && o.store.lng === 0) && !(o.customer.lat === 0 && o.customer.lng === 0) && haversineKm(o.store, o.customer) <= 50)
   if (parsedOrders.length < before) warnings.push(`${before - parsedOrders.length} orders skipped with the store over 50 km from the customer or at 0,0, which points to broken coordinates.`)
   if (!parsedOrders.length) return { dataset: null, errors: errors.length ? errors : ['No valid orders.'], warnings }
+
+  // Couriers who were given must be used or explained, never swapped for an invented fleet.
+  const given = courierRecs.length
+  const noFleet = (why: string): ParseResult => ({ dataset: null, errors: [`${why} Fix the couriers, or clear that box to use an assumed fleet.`, ...errors], warnings })
+  if (given && !parsedCouriers.length) {
+    const other = [...courierKinds.keys()].find(k => k !== orderKind)
+    return noFleet(other && courierKinds.size === 1
+      ? `Orders use ${KIND_LABEL[orderKind]} but couriers use ${KIND_LABEL[other]}, which cannot be put on one timeline.`
+      : `None of the ${given} courier rows can be used.`)
+  }
+  // Late-night orders in clock times belong to the evening's shift when only that shift covers them.
+  if (orderKind === 'clock' && !meituan && parsedCouriers.some(c => c.shiftEnd > 1440)) {
+    const covered = (t: number) => parsedCouriers.some(c => t >= c.shiftStart && t <= c.shiftEnd)
+    const late = parsedOrders.filter(o => !covered(o.createdAt) && covered(o.createdAt + 1440))
+    late.forEach(o => { o.createdAt += 1440 })
+    if (late.length) warnings.push(`Orders after midnight placed in the overnight shift, as the next day: ${late.length}.`)
+  }
 
   // One run models one market on one day. A file mixing cities or days keeps its biggest slice.
   const cell = (o: Order) => `${Math.round(o.store.lat * 2)}|${Math.round(o.store.lng * 2)}`
@@ -538,6 +695,14 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
     warnings.push(`Orders span ${days.size} days, so the busiest day${label} was kept: ${parsedOrders.length} of ${total} orders.`)
   }
   if (parsedOrders.length > MAX_ORDERS) return { dataset: null, errors: [`${parsedOrders.length} orders is over the ${MAX_ORDERS} limit for a browser run.`], warnings }
+
+  // A shift more than a day from every order can only be a wrong date.
+  const firstAt = Math.min(...parsedOrders.map(o => o.createdAt))
+  const lastAt = Math.max(...parsedOrders.map(o => o.createdAt))
+  const near = parsedCouriers.filter(c => c.shiftEnd >= firstAt - 1440 && c.shiftStart <= lastAt + 1440 && c.shiftEnd - c.shiftStart <= MAX_SHIFT_MIN)
+  if (near.length < parsedCouriers.length) warnings.push(`Couriers dropped for a shift more than a day from every order, or over 7 days long: ${parsedCouriers.length - near.length}.`)
+  parsedCouriers = near
+  if (given && !parsedCouriers.length) return noFleet('No courier works in the market and on the day of the kept orders.')
 
   const observed = parsedOrders.filter(o => observedOf.has(o)).map(o => observedOf.get(o)!)
 
