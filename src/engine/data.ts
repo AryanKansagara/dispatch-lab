@@ -272,14 +272,44 @@ function parseDate(v: unknown): number {
   return Date.UTC(Number(y), Number(m) - 1, Number(d)) / 60000
 }
 
-/** Plain numbers, plus labelled ones such as "(min) 24"; "NaN", blank and missing are NaN. */
+/** An empty cell, or the usual spellings of one. */
+const isBlank = (v: unknown) => /^(nan|null)?$/i.test(String(v ?? '').trim())
+
+/**
+ * A number must fill its whole cell. Anything left over ("10-15", "4,5", "40°42'46\"") is NaN, because
+ * reading part of it gives a wrong value that looks right. Thousands commas count only before a decimal
+ * point: "1,250.50" is plain, "1,250" could be a decimal comma.
+ */
+const NUMBER = String.raw`[-+]?(?:\d{1,3}(?:,\d{3})+\.\d+|\d+(?:\.\d+)?|\.\d+)(?:e[-+]?\d+)?`
+const whole = new RegExp(`^${NUMBER}$`, 'i')
 const num = (v: unknown) => {
   if (typeof v === 'number') return v
   const s = String(v ?? '').trim()
-  if (s === '') return NaN
-  if (/^-?\d+(\.\d+)?(e-?\d+)?$/i.test(s)) return Number(s)
-  const m = /-?\d+(\.\d+)?/.exec(s)
-  return m && /[a-z(]/i.test(s) && !/nan/i.test(s) ? Number(m[0]) : NaN
+  return whole.test(s) ? Number(s.replaceAll(',', '')) : NaN
+}
+
+/** "12", "12 min", "(min) 12" or "1h 20m". */
+function minutesOf(v: unknown): number {
+  if (typeof v === 'number') return v
+  const s = String(v ?? '').trim().toLowerCase().replace(/^\(min\)\s*/, '')
+  const hm = /^(\d+)\s*(?:h|hr|hrs|hours?)(?:\s*(\d{1,2})\s*(?:m|mins?|minutes?)?)?$/.exec(s)
+  if (hm) return Number(hm[1]) * 60 + Number(hm[2] ?? 0)
+  return num(s.replace(/\s*(?:m|mins?|minutes?)$/, ''))
+}
+
+/** "8.25", "$8.25", "USD 8.25" or "8.25 CAD". */
+const CURRENCY = String.raw`(?:[A-Z]{0,3}[$€£¥₹]|[A-Z]{3}|Rs\.?)`
+const money = (v: unknown) => typeof v === 'number' ? v
+  : num(String(v ?? '').trim().replace(new RegExp(`^(-?)${CURRENCY}\\s*`), '$1').replace(new RegExp(`\\s*${CURRENCY}$`), ''))
+
+/** Decimal degrees, with an optional sign or hemisphere: "-74.006", "74.006° W". */
+function degrees(v: unknown, hemispheres: 'NS' | 'EW'): number {
+  if (typeof v === 'number') return v
+  const m = new RegExp(`^([+-]?[\\d.]+)\\s*°?\\s*([${hemispheres}])?$`, 'i').exec(String(v ?? '').trim())
+  if (!m) return num(v)
+  const n = num(m[1])
+  if (!m[2]) return n
+  return /^[+-]/.test(m[1]) ? NaN : m[2].toUpperCase() === hemispheres[0] ? n : -n
 }
 const validPos = (lat: number, lng: number) => Math.abs(lat) <= 90 && Math.abs(lng) <= 180
 
@@ -305,6 +335,8 @@ export interface ParseResult { dataset: Dataset | null; errors: string[]; warnin
 export const MAX_ORDERS = 5000
 const MAX_COURIERS = 800
 const MAX_ROWS = 200_000
+/** Food that takes over a day to prepare is a unit mix-up. */
+const MAX_PREP_MIN = 1440
 /** Longest shift that can be real rather than a unit mix-up; it also bounds the length of a run. */
 const MAX_SHIFT_MIN = 7 * 1440
 
@@ -472,6 +504,7 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
   let observedOf = new Map<Order, number>()
   const rows: { o: Order; line: number; kind: TimeKind }[] = []
   let orderKind: TimeKind = 'date'
+  let unreadObserved = 0
   if (meituan) {
     const m = fromMeituan(orderRecs, warnings)
     parsedOrders = m.orders
@@ -485,23 +518,26 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
     // A separate date column turns clock times into absolute ones, so multi-day files sort correctly.
     let kind = timeKind(pickField(rec, F.created))
     if (!Number.isNaN(day) && createdAt >= 0 && createdAt < 1440) { createdAt += day; kind = 'date' }
-    const sLat = num(pickField(rec, F.storeLat))
-    const sLng = num(pickField(rec, F.storeLng))
-    const cLat = num(pickField(rec, F.custLat))
-    const cLng = num(pickField(rec, F.custLng))
-    let prep = num(pickField(rec, F.prep))
-    if (!Number.isFinite(prep)) {
-      // No prep column: the wait from order to pickup is the closest recorded stand-in.
+    const sLat = degrees(pickField(rec, F.storeLat), 'NS')
+    const sLng = degrees(pickField(rec, F.storeLng), 'EW')
+    const cLat = degrees(pickField(rec, F.custLat), 'NS')
+    const cLng = degrees(pickField(rec, F.custLng), 'EW')
+    const prepCell = pickField(rec, F.prep)
+    let prep = minutesOf(prepCell)
+    if (isBlank(prepCell)) {
+      // No prep time: the wait from order to pickup is the closest recorded stand-in.
       const picked = parseTime(pickField(rec, F.picked))
       const created = parseTime(pickField(rec, F.created))
       if (Number.isFinite(picked) && Number.isFinite(created)) prep = picked - created + (picked < created && created < 1440 ? 1440 : 0)
     }
-    const payout = num(pickField(rec, F.payout))
+    const payCell = pickField(rec, F.payout)
+    const payout = money(payCell)
     const missing = [
       !Number.isFinite(createdAt) && 'created time',
       (!Number.isFinite(sLat) || !Number.isFinite(sLng)) && 'store lat/lng',
       (!Number.isFinite(cLat) || !Number.isFinite(cLng)) && 'customer lat/lng',
-      (!Number.isFinite(prep) || prep < 0) && 'prep time',
+      (!Number.isFinite(prep) || prep < 0 || prep > MAX_PREP_MIN) && 'prep time',
+      !isBlank(payCell) && !(Number.isFinite(payout) && payout >= 0) && 'payout',
     ].filter(Boolean)
     if (missing.length) { bad.push(`Order line ${line}: bad ${missing.join(', ')}`); return }
     if (!validPos(sLat, sLng) || !validPos(cLat, cLng)) { bad.push(`Order line ${line}: coordinates out of range`); return }
@@ -511,12 +547,15 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
       store: { lat: sLat, lng: sLng },
       customer: { lat: cLat, lng: cLng },
       prepMin: prep,
-      ...(Number.isFinite(payout) && payout >= 0 ? { payout } : {}),
+      ...(isBlank(payCell) ? {} : { payout }),
     }
     rows.push({ o, line, kind })
-    const seen = num(pickField(rec, F.observed))
-    if (seen > 0) observedOf.set(o, seen)
+    const seenCell = pickField(rec, F.observed)
+    const seen = minutesOf(seenCell)
+    if (seen > 0 && Number.isFinite(seen)) observedOf.set(o, seen)
+    else if (!isBlank(seenCell)) unreadObserved++
   })
+  if (unreadObserved) warnings.push(`Recorded delivery times that could not be read and were left out: ${unreadObserved}.`)
   if (!meituan && rows.length) {
     const count = (k: TimeKind) => rows.filter(r => r.kind === k).length
     const [first, second] = (Object.keys(KIND_LABEL) as TimeKind[]).sort((a, b) => count(b) - count(a))
@@ -543,8 +582,8 @@ export function parseDataset(ordersText: string, couriersText: string, name = 'Y
       if (kind === 'clock' && shiftEnd < shiftStart) shiftEnd += 1440
       if (shiftEnd - shiftStart > MAX_SHIFT_MIN) { bad.push(`Courier line ${line}: the shift is longer than 7 days`); return }
     }
-    const lat = num(pickField(rec, F.startLat))
-    const lng = num(pickField(rec, F.startLng))
+    const lat = degrees(pickField(rec, F.startLat), 'NS')
+    const lng = degrees(pickField(rec, F.startLng), 'EW')
     if (!Number.isFinite(shiftStart) || !Number.isFinite(shiftEnd) || !(shiftEnd > shiftStart) || !validPos(lat, lng) || !Number.isFinite(lat) || !Number.isFinite(lng)) {
       bad.push(`Courier line ${line}: needs shift start before shift end, and a start position`)
       return
