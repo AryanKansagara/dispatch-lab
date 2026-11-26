@@ -57,12 +57,25 @@ export function t975(df: number): number {
   return z + (z ** 3 + z) / (4 * d) + (5 * z ** 5 + 16 * z ** 3 + 3 * z) / (96 * d ** 2) + (3 * z ** 7 + 19 * z ** 5 + 17 * z ** 3 - 15 * z) / (384 * d ** 3)
 }
 
-export interface Estimate { diff: number; se: number; lo: number; hi: number; n: number; clusters: number }
+/** Why an estimate has no interval: an arm with no data, an arm in too few clusters, or an outcome that never varied. */
+export type NotEstimable = 'empty-arm' | 'few-clusters' | 'no-variation'
+
+/** Without an interval `se`, `lo` and `hi` are NaN and `why` says what is missing. With an empty arm `diff` is NaN too. */
+export interface Estimate { diff: number; se: number; lo: number; hi: number; n: number; clusters: number; why?: NotEstimable }
+
+const noInterval = (diff: number, n: number, clusters: number, why: NotEstimable): Estimate =>
+  ({ diff, se: NaN, lo: NaN, hi: NaN, n, clusters, why })
+
+/** Rounding leaves a tiny remainder where the exact variance is zero. */
+const isZero = (se: number, ys: number[]) => se <= 1e-9 * ys.reduce((m, y) => Math.max(m, Math.abs(y)), 1e-9)
 
 /**
  * Difference in means from y ~ treated, with a CR1 cluster-robust sandwich variance.
  * Units are weighted equally, so this is the simple average of time-region units. The t critical
  * value uses clusters minus one degrees of freedom, because few clusters make the sandwich optimistic.
+ *
+ * An arm seen in a single cluster has residuals that sum to zero there by construction, so the
+ * sandwich would leave that arm's noise out. Such a design gets no interval rather than a false one.
  */
 export function clusterRobustDiff(rows: { y: number; treated: boolean; cluster: string }[]): Estimate {
   const n = rows.length
@@ -70,7 +83,11 @@ export function clusterRobustDiff(rows: { y: number; treated: boolean; cluster: 
   const n0 = n - n1
   const m1 = mean(rows.filter(r => r.treated).map(r => r.y))
   const m0 = mean(rows.filter(r => !r.treated).map(r => r.y))
+  const clustersOf = (treated: boolean) => new Set(rows.filter(r => r.treated === treated).map(r => r.cluster)).size
+  const G = new Set(rows.map(r => r.cluster)).size
+  if (!n1 || !n0) return noInterval(NaN, n, G, 'empty-arm')
   const diff = m1 - m0
+  if (clustersOf(true) < 2 || clustersOf(false) < 2) return noInterval(diff, n, G, 'few-clusters')
   const xBar = n1 / Math.max(n, 1)
   const sxx = n1 * (1 - xBar) ** 2 + n0 * xBar ** 2
   const scores = new Map<string, number>()
@@ -79,34 +96,40 @@ export function clusterRobustDiff(rows: { y: number; treated: boolean; cluster: 
     const e = r.y - (r.treated ? m1 : m0)
     scores.set(r.cluster, (scores.get(r.cluster) ?? 0) + (x - xBar) * e)
   }
-  const G = scores.size
   let meat = 0
   for (const s of scores.values()) meat += s * s
-  const correction = G > 1 && n > 2 ? (G / (G - 1)) * ((n - 1) / (n - 2)) : 1
-  const se = sxx > 0 ? Math.sqrt(correction * meat) / sxx : 0
+  const correction = (G / (G - 1)) * ((n - 1) / (n - 2))
+  const se = Math.sqrt(correction * meat) / sxx
+  if (isZero(se, rows.map(r => r.y))) return noInterval(diff, n, G, 'no-variation')
   const crit = t975(G - 1)
   return { diff, se, lo: diff - crit * se, hi: diff + crit * se, n, clusters: G }
 }
 
 /** Plain two-sample estimate that wrongly treats each order as independent. */
 export function welchDiff(a: number[], b: number[]): Estimate {
+  const n = a.length + b.length
+  if (!a.length || !b.length) return noInterval(NaN, n, n, 'empty-arm')
   const ma = mean(a)
   const mb = mean(b)
   const va = a.reduce((s, x) => s + (x - ma) ** 2, 0) / Math.max(a.length - 1, 1)
   const vb = b.reduce((s, x) => s + (x - mb) ** 2, 0) / Math.max(b.length - 1, 1)
   const se = Math.sqrt(va / Math.max(a.length, 1) + vb / Math.max(b.length, 1))
   const diff = mb - ma
-  return { diff, se, lo: diff - 1.96 * se, hi: diff + 1.96 * se, n: a.length + b.length, clusters: a.length + b.length }
+  if (a.length < 2 || b.length < 2) return noInterval(diff, n, n, 'few-clusters')
+  if (isZero(se, [...a, ...b])) return noInterval(diff, n, n, 'no-variation')
+  return { diff, se, lo: diff - 1.96 * se, hi: diff + 1.96 * se, n, clusters: n }
 }
 
+/** NaN when there is no standard error to compute it from. */
 export const powerAt = (effect: number, se: number) => {
-  if (se <= 0) return 1
+  if (!(se > 0)) return NaN
   const z = Math.abs(effect) / se
   return normCdf(z - 1.959964) + normCdf(-z - 1.959964)
 }
 
 /** Standard error shrinks with the root of run length, so required length scales with its square. */
 export function daysForPower(effect: number, seAtDays: number, days: number): number {
+  if (!(seAtDays > 0)) return NaN
   if (effect === 0) return Infinity
   return Math.max(1, Math.ceil(days * (((1.959964 + 0.841621) * seAtDays) / Math.abs(effect)) ** 2))
 }

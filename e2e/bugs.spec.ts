@@ -3,18 +3,34 @@ import { overpass, searchCity, stub } from './osm.ts'
 
 // Open bugs, pinned. Each becomes a normal test in the pull request that fixes it.
 
-test.fail('#2 an experiment whose units all got one arm claims no result', async ({ page }) => {
+test('#2 an experiment whose units all got one arm claims no result', async ({ page }) => {
   await open(page, 'seed=4&tab=experiment&a=greedy.50.50.0&b=batch.50.50.0&days=2&rg=1&w=120')
   const power = page.locator('.stat', { hasText: 'Switchback power' }).locator('b')
   await expect(power).toBeVisible({ timeout: 60_000 })
   await expect(power).toHaveText('n/a', { timeout: 3_000 })
 })
 
-test.fail('#3 skipped rows and the assumed fleet are reported beside the results', async ({ page }) => {
+test('#3 skipped rows and the assumed fleet are reported beside the results', async ({ page }) => {
+  const report = page.getByRole('note', { name: 'Import report' })
   await load(page, orders('a,1,10,20,10.01,20,10', 'b,nope,10,20,10.01,20,10'))
   await expect(page.locator('.verdict')).toBeVisible()
-  await expect(page.getByText(/Order line 3: bad created time/)).toBeVisible({ timeout: 3_000 })
-  await expect(page.getByText(/assumed fleet of 4/)).toBeVisible()
+  await expect(report).toContainText('Order line 3: bad created time')
+  await expect(report).toContainText('assumed fleet of 4')
+  // It stays with the data: after a reload, and on the other tabs that show results.
+  await page.reload()
+  await expect(report).toContainText('Order line 3')
+  for (const name of ['Experiment', 'Sweep', 'Your data'] as const) {
+    await tab(page, name)
+    await expect(report).toContainText('Order line 3')
+  }
+  // A scenario is not about this file, and a clean file has nothing to report.
+  await tab(page, 'Replay')
+  await page.getByRole('button', { name: 'Lunch rush' }).click()
+  await expect(report).toHaveCount(0)
+  await page.goto('/')
+  await load(page, orders('a,1,10,20,10.01,20,10'), ONE_COURIER)
+  await expect(page.locator('.verdict')).toBeVisible()
+  await expect(report).toHaveCount(0)
 })
 
 test('#4 dated orders with clock-time couriers are explained, not run', async ({ page }) => {

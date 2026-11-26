@@ -270,8 +270,10 @@ export function EstimateChart({ o, unit, compact }: { o: OutcomeResult; unit: st
     { name: 'Switchback', detail: 'Cluster-robust 95% CI', mid: o.switchback.diff, lo: o.switchback.lo, hi: o.switchback.hi, cls: 'est-sb' },
     { name: 'Naive A/B', detail: 'Order-level 95% CI', mid: o.naive.diff, lo: o.naive.lo, hi: o.naive.hi, cls: 'est-naive' },
   ]
-  const lo = Math.min(0, ...rows.map(r => r.lo))
-  const hi = Math.max(0, ...rows.map(r => r.hi))
+  // An estimate can lack its interval, or (with an empty arm) its value as well.
+  const known = rows.flatMap(r => [r.lo, r.mid, r.hi]).filter(v => !Number.isNaN(v))
+  const lo = Math.min(0, ...known)
+  const hi = Math.max(0, ...known)
   const d = (hi - lo || 1) * 0.1
   const W = 620
   const L = compact ? 110 : 170
@@ -279,7 +281,7 @@ export function EstimateChart({ o, unit, compact }: { o: OutcomeResult; unit: st
   const rowH = 52
   const H = rowH * 3 + 40
   const x = (v: number) => L + ((v - (lo - d)) / (hi - lo + 2 * d)) * (W - L - R)
-  const f = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}`
+  const f = (v: number) => Number.isNaN(v) ? 'not estimable' : `${v > 0 ? '+' : ''}${v.toFixed(2)}`
   return (
     <svg className="estimates" viewBox={`0 0 ${W} ${H}`} role="img"
       aria-label={`True effect ${f(o.truth)} ${unit}. Switchback estimate ${f(o.switchback.diff)}. Naive A/B estimate ${f(o.naive.diff)}.`}>
@@ -294,13 +296,15 @@ export function EstimateChart({ o, unit, compact }: { o: OutcomeResult; unit: st
       {rows.map((r, i) => {
         const cy = 8 + rowH * i + rowH / 2
         return (
-          <g key={r.name} className={r.cls} data-tip={`${r.name}: ${f(r.mid)} ${unit}${r.lo !== r.hi ? `, 95% CI ${f(r.lo)} to ${f(r.hi)}` : ''}`}>
+          <g key={r.name} className={r.cls} data-tip={`${r.name}: ${f(r.mid)}${Number.isNaN(r.mid) ? '' : ` ${unit}`}${Number.isNaN(r.lo) ? ', no interval' : r.lo !== r.hi ? `, 95% CI ${f(r.lo)} to ${f(r.hi)}` : ''}`}>
             <text x={0} y={cy - 2} className="est-name">{r.name}</text>
             {!compact && <text x={0} y={cy + 14} className="est-detail">{r.detail}</text>}
             <rect x={L} y={cy - 18} width={W - L - R} height={36} fill="transparent" />
-            {r.lo !== r.hi && <line x1={x(r.lo)} x2={x(r.hi)} y1={cy} y2={cy} className="est-bar" />}
-            <circle cx={x(r.mid)} cy={cy} r="8" className="est-dot" />
-            <text x={x(r.mid)} y={cy - 14} textAnchor="middle" className="est-value">{f(r.mid)}</text>
+            {!Number.isNaN(r.lo) && r.lo !== r.hi && <line x1={x(r.lo)} x2={x(r.hi)} y1={cy} y2={cy} className="est-bar" />}
+            {Number.isNaN(r.mid) ? <text x={(L + W - R) / 2} y={cy + 4} textAnchor="middle" className="est-detail">Not estimable</text> : <>
+              <circle cx={x(r.mid)} cy={cy} r="8" className="est-dot" />
+              <text x={x(r.mid)} y={cy - 14} textAnchor="middle" className="est-value">{f(r.mid)}</text>
+            </>}
           </g>
         )
       })}
@@ -315,7 +319,8 @@ export function PowerChart({ effect, seSwitchback, seNaive, days, unit }: { effe
   const x = (d: number) => p.l + ((d - 1) / (maxDays - 1)) * (p.w - p.l - p.r)
   const y = (v: number) => p.h - p.b - v * (p.h - p.t - p.b)
   const at = (d: number, se: number) => powerAt(effect, se * Math.sqrt(days / d))
-  const path = (se: number) => Array.from({ length: maxDays }, (_, i) => `${i ? 'L' : 'M'}${x(i + 1).toFixed(1)},${y(at(i + 1, se)).toFixed(1)}`).join('')
+  const pctAt = (d: number, se: number) => Number.isNaN(at(d, se)) ? 'n/a' : `${Math.round(at(d, se) * 100)}%`
+  const path = (se: number) => !(se > 0) ? '' : Array.from({ length: maxDays }, (_, i) => `${i ? 'L' : 'M'}${x(i + 1).toFixed(1)},${y(at(i + 1, se)).toFixed(1)}`).join('')
   const [hover, setHover] = useState<number | null>(null)
   return (
     <ChartFrame title="Power by experiment length" sub={`Chance of detecting ${Math.abs(effect).toFixed(2)} ${unit} at 95% confidence. Standard error shrinks with the root of the days run.`}
@@ -334,9 +339,9 @@ export function PowerChart({ effect, seSwitchback, seNaive, days, unit }: { effe
         {hover !== null && (
           <g>
             <line x1={x(hover)} x2={x(hover)} y1={p.t} y2={p.h - p.b} className="crosshair" />
-            <circle cx={x(hover)} cy={y(at(hover, seSwitchback))} r="4.5" fill="var(--a)" stroke="var(--surface)" strokeWidth="2" />
+            {seSwitchback > 0 && <circle cx={x(hover)} cy={y(at(hover, seSwitchback))} r="4.5" fill="var(--a)" stroke="var(--surface)" strokeWidth="2" />}
             <rect x={p.l} y={p.t} width={p.w - p.l - p.r} height={p.h - p.t - p.b} fill="transparent"
-              data-tip={`${hover} days: switchback ${Math.round(at(hover, seSwitchback) * 100)}%, naive ${Math.round(at(hover, seNaive) * 100)}%`} />
+              data-tip={`${hover} days: switchback ${pctAt(hover, seSwitchback)}, naive ${pctAt(hover, seNaive)}`} />
           </g>
         )}
       </svg>
